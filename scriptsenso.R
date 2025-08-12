@@ -624,27 +624,27 @@ for (file_path in excel_files) {
   
   # 1. Sauvegarder les données brutes avec SOURCE_NAME
   if(save_raw_data_to_db(file_data, source_name)) {
-    message("✅ Données brutes sauvegardées dans SA_RAW_DATA")
+    message(" Données brutes sauvegardées dans SA_RAW_DATA")
   }
   
   # 2. Déterminer le type de test et sauvegarder les résultats
   test_type <- determine_test_type(segments)
   if(exists("file_results") && nrow(file_results) > 0) {
     if(save_results_to_db(file_results, source_name, test_type)) {
-      message("✅ Résultats sauvegardés dans SA_RESULTS_DATA (", test_type, ")")
+      message(" Résultats sauvegardés dans SA_RESULTS_DATA (", test_type, ")")
     }
   }
   
   # 3. Sauvegarder le tracking des juges
   if(exists("judge_tracking_table") && nrow(judge_tracking_table) > 0) {
     if(save_judges_to_db(judge_tracking_table, source_name)) {
-      message("✅ Tracking juges sauvegardé dans SA_JUDGES")
+      message(" Tracking juges sauvegardé dans SA_JUDGES")
     }
   }
   
   # 4. Sauvegarder les couples métadonnées
   if(save_metadata_couples(file_data, source_name)) {
-    message("✅ Couples métadonnées sauvegardés dans Metadata_SA")
+    message(" Couples métadonnées sauvegardés dans Metadata_SA")
   }
   
   # Mise à jour du tracking
@@ -666,10 +666,10 @@ message("Nouveaux fichiers détectés : ", files_new)
 message("Nouveaux fichiers traités avec succès : ", files_processed)
 
 message("\n=== BASES DE DONNÉES MISES À JOUR ===")
-message("✅ SA_RAW_DATA : Données brutes avec SOURCE_NAME et JudgeStatus")
-message("✅ SA_RESULTS_DATA : Résultats par type de test (Strength/Proximity/Triangulaire/MO)")
-message("✅ SA_JUDGES : Tracking détaillé des juges")
-message("✅ Metadata_SA : Couples (SOURCE_NAME, ProductName) pour l'application")
+message(" SA_RAW_DATA : Données brutes avec SOURCE_NAME et JudgeStatus")
+message(" SA_RESULTS_DATA : Résultats par type de test (Strength/Proximity/Triangulaire/MO)")
+message(" SA_JUDGES : Tracking détaillé des juges")
+message(" Metadata_SA : Couples (SOURCE_NAME, ProductName) pour l'application")
 
 message("\nAnalyse terminée: ", Sys.time())
 # ===== FONCTIONS UTILITAIRES ET D'ANALYSE (SUITE) =====
@@ -1314,27 +1314,27 @@ for (file_path in excel_files) {
   
   # 1. Sauvegarder les données brutes avec SOURCE_NAME
   if(save_raw_data_to_db(file_data, source_name)) {
-    message("✅ Données brutes sauvegardées dans SA_RAW_DATA")
+    message(" Données brutes sauvegardées dans SA_RAW_DATA")
   }
   
   # 2. Déterminer le type de test et sauvegarder les résultats
   test_type <- determine_test_type(segments)
   if(exists("file_results") && nrow(file_results) > 0) {
     if(save_results_to_db(file_results, source_name, test_type)) {
-      message("✅ Résultats sauvegardés dans SA_RESULTS_DATA (", test_type, ")")
+      message(" Résultats sauvegardés dans SA_RESULTS_DATA (", test_type, ")")
     }
   }
   
   # 3. Sauvegarder le tracking des juges
   if(exists("judge_tracking_table") && nrow(judge_tracking_table) > 0) {
     if(save_judges_to_db(judge_tracking_table, source_name)) {
-      message("✅ Tracking juges sauvegardé dans SA_JUDGES")
+      message(" Tracking juges sauvegardé dans SA_JUDGES")
     }
   }
   
   # 4. Sauvegarder les couples métadonnées
   if(save_metadata_couples(file_data, source_name)) {
-    message("✅ Couples métadonnées sauvegardés dans Metadata_SA")
+    message(" Couples métadonnées sauvegardés dans Metadata_SA")
   }
   
   # Mise à jour du tracking
@@ -1643,7 +1643,7 @@ message("\n" + paste(rep("=", 80), collapse = ""))
 message("=== RÉSUMÉ FINAL DE L'ANALYSE AVEC INTÉGRATION MULTI-DATABASES ===")
 message(paste(rep("=", 80), collapse = ""))
 
-message("\n📁 FICHIERS TRAITÉS :")
+message("\n FICHIERS TRAITÉS :")
 message("   • Fichiers Excel détectés : ", length(excel_files))
 message("   • Fichiers déjà traités (skippés) : ", files_skipped)
 message("   • Nouveaux fichiers détectés : ", files_new)
@@ -1656,10 +1656,10 @@ if(files_new > 0) {
 }
 
 message("\n🗄️ BASES DE DONNÉES MISES À JOUR :")
-message("   ✅ SA_RAW_DATA : Données brutes avec SOURCE_NAME et JudgeStatus")
-message("   ✅ SA_RESULTS_DATA : Résultats par type de test (Strength/Proximity/Triangulaire/MO)")
-message("   ✅ SA_JUDGES : Tracking détaillé des juges")
-message("   ✅ Metadata_SA : Couples (SOURCE_NAME, ProductName) pour l'application")
+message("    SA_RAW_DATA : Données brutes avec SOURCE_NAME et JudgeStatus")
+message("    SA_RESULTS_DATA : Résultats par type de test (Strength/Proximity/Triangulaire/MO)")
+message("    SA_JUDGES : Tracking détaillé des juges")
+message("    Metadata_SA : Couples (SOURCE_NAME, ProductName) pour l'application")
 
 message("\n📊 STATISTIQUES GLOBALES :")
 if(length(all_results) > 0) {
@@ -1684,7 +1684,7 @@ if(length(judge_removal_info) > 0) {
   message("   • Total de juges retirés : ", total_removed_judges)
 }
 
-message("\n📋 PROBLÈMES DÉTECTÉS :")
+message("\n PROBLÈMES DÉTECTÉS :")
 if(length(data_issues_log) > 0) {
   message("   • Nombre total de problèmes : ", length(data_issues_log))
   
@@ -1697,26 +1697,26 @@ if(length(data_issues_log) > 0) {
     message("     - ", names(problem_types)[i], " : ", problem_types[i])
   }
 } else {
-  message("   ✅ Aucun problème détecté")
+  message("   Aucun problème détecté")
 }
 
-message("\n📁 FICHIERS GÉNÉRÉS :")
+message("\n FICHIERS GÉNÉRÉS :")
 message("   • Dossier de sortie : ", output_base_dir)
 message("   • Fichiers individuels : ", files_processed, " fichiers")
 message("   • Fichier consolidé global : ANALYSE_CONSOLIDEE_GLOBALE.xlsx")
 message("   • Fichier de tracking : TRACKING_FICHIERS.xlsx")
 
-message("\n🔗 CONNEXIONS BASES DE DONNÉES :")
+message("\n CONNEXIONS BASES DE DONNÉES :")
 message("   • Serveur : ", DB_CONFIG$host, ":", DB_CONFIG$port)
 message("   • Utilisateur : ", DB_CONFIG$user)
 message("   • Bases utilisées : ", paste(unlist(DATABASES), collapse = ", "))
 
-message("\n⏰ TEMPS D'EXÉCUTION :")
+message("\n TEMPS D'EXÉCUTION :")
 message("   • Début : ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
 message("   • Fin : ", format(Sys.time(), "%Y-%m-%d %H:%M:%S"))
 
 message("\n" + paste(rep("=", 80), collapse = ""))
-message("🎉 ANALYSE TERMINÉE AVEC SUCCÈS !")
+message("ANALYSE TERMINÉE AVEC SUCCÈS !")
 message("   Les données sont maintenant disponibles dans les 4 bases PostgreSQL")
 message("   et les fichiers Excel ont été générés dans : ", output_base_dir)
 message(paste(rep("=", 80), collapse = ""))
@@ -1725,6 +1725,6 @@ message(paste(rep("=", 80), collapse = ""))
 # rm(list = ls())
 # gc()
 
-message("\n✨ Script terminé à : ", Sys.time())
+message("\ncript terminé à : ", Sys.time())
 
   
