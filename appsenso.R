@@ -14,9 +14,9 @@ suppressPackageStartupMessages({
   library(fs)
   library(shinyWidgets)
   library(shinycssloaders)
-  library(RPostgres)  # ✅ AJOUT: Connexion PostgreSQL
-  library(DBI)        # ✅ AJOUT: Interface base de données
-  library(shinyjs)    # ✅ AJOUT: Pour les interactions JavaScript
+  library(RPostgres)  #  AJOUT: Connexion PostgreSQL
+  library(DBI)        #  AJOUT: Interface base de données
+  library(shinyjs)    #  AJOUT: Pour les interactions JavaScript
 })
 
 # ===== CONFIGURATION ADAPTÉE AVEC POSTGRESQL =====
