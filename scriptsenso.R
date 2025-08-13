@@ -791,7 +791,7 @@ handle_proximity_test <- function(segment) {
   )
 }
 
-# ===== FONCTION GESTION DES TESTS TRIANGULAIRES COMPLETS =====
+# ===== FONCTION GESTION DES TESTS TRIANGULAIRES COMPLETS AVEC P-VALUE =====
 handle_triangular_test_complete <- function(segment, file_path) {
   tryCatch({
     message("Traitement test triangulaire complet: ", unique(segment$NomFonction))
@@ -813,15 +813,26 @@ handle_triangular_test_complete <- function(segment, file_path) {
       message("Candidat par défaut: ", candidat_product)
     }
     
-    n_total <- sum(!is.na(combined_segment$Value))
-    n_correct <- sum(combined_segment$Value == 1, na.rm = TRUE)
+    # ===== CALCUL DU TEST TRIANGULAIRE =====
+    n_total <- sum(!is.na(combined_segment$Value))  # n = nb de participants
+    n_correct <- sum(combined_segment$Value == 1, na.rm = TRUE)  # x = nb de bonnes réponses
     ratio <- round(n_correct / n_total, 3)
     
-    test_result <- binom.test(n_correct, n_total, p = 1/3)
-    p_value <- round(test_result$p.value, 4)
+    # Test binomial avec p = 1/3 (constante pour test triangulaire)
+    # alternative = "greater" pour tester si le taux de réussite > hasard (1/3)
+    test_result <- binom.test(n_correct, n_total, p = 1/3, alternative = "greater")
+    p_value <- test_result$p.value
     
-    message("Test triangulaire - Total: ", n_total, " | Correct: ", n_correct, 
-            " | Ratio: ", ratio, " | p-value: ", p_value)
+    # Différence significative si p-value < 0.05
+    significatif_5pct <- p_value < 0.05
+    significatif_10pct <- p_value < 0.10
+    
+    message("Test triangulaire - Participants: ", n_total, 
+            " | Bonnes réponses: ", n_correct, 
+            " | Ratio: ", ratio, 
+            " | p-value: ", round(p_value, 4),
+            " | Significatif (5%): ", significatif_5pct,
+            " | Significatif (10%): ", significatif_10pct)
     
     result <- tibble(
       IDTEST = unique(combined_segment$TrialName)[1],
@@ -831,7 +842,11 @@ handle_triangular_test_complete <- function(segment, file_path) {
       Ratio = ratio,
       N_tot = n_total,
       N_correct = n_correct,
-      `P-value` = p_value
+      `P-value` = round(p_value, 4),
+      Significatif_5pct = significatif_5pct,
+      Significatif_10pct = significatif_10pct,
+      IC_inf = round(test_result$conf.int[1], 3),
+      IC_sup = round(test_result$conf.int[2], 3)
     )
     
     return(result)
@@ -846,10 +861,15 @@ handle_triangular_test_complete <- function(segment, file_path) {
       Ratio = NA_real_,
       N_tot = NA_integer_,
       N_correct = NA_integer_,
-      `P-value` = NA_real_
+      `P-value` = NA_real_,
+      Significatif_5pct = NA,
+      Significatif_10pct = NA,
+      IC_inf = NA_real_,
+      IC_sup = NA_real_
     ))
   })
 }
+
 
 # ===== FONCTION DE TRAITEMENT DES SEGMENTS TRIANGULAIRES =====
 process_triangular_segments <- function(segments, file_path) {
@@ -868,22 +888,29 @@ process_triangular_segments <- function(segments, file_path) {
   return(result)
 }
 
-# ===== FONCTION DE TRAITEMENT TRIANGULAIRE SIMPLE =====
+# ===== FONCTION DE TRAITEMENT TRIANGULAIRE SIMPLE AVEC P-VALUE =====
 handle_triangular_test <- function(segment) {
   tryCatch({
     message("Traitement test triangulaire: ", unique(segment$NomFonction))
     
-    n_total <- sum(!is.na(segment$Value))
-    n_correct <- sum(segment$Value == 1, na.rm = TRUE)
+    # Calcul des paramètres du test
+    n_total <- sum(!is.na(segment$Value))  # n = nb de participants
+    n_correct <- sum(segment$Value == 1, na.rm = TRUE)  # x = nb de bonnes réponses
     ratio <- round(n_correct / n_total, 3)
     
-    test_result <- binom.test(n_correct, n_total, p = 1/3)
+    # Test binomial triangulaire : H0: p = 1/3 vs H1: p > 1/3
+    test_result <- binom.test(n_correct, n_total, p = 1/3, alternative = "greater")
     p_value <- test_result$p.value
     
-    significatif <- p_value < 0.10
+    # Seuils de significativité
+    significatif_5pct <- p_value < 0.05
+    significatif_10pct <- p_value < 0.10
     
-    message("Test triangulaire - Total: ", n_total, " | Correct: ", n_correct, 
-            " | Ratio: ", ratio, " | p-value: ", round(p_value, 4))
+    message("Test triangulaire - Participants: ", n_total, 
+            " | Bonnes réponses: ", n_correct, 
+            " | Ratio: ", ratio, 
+            " | p-value: ", round(p_value, 4),
+            " | Significatif (5%): ", significatif_5pct)
     
     result <- tibble(
       IDTest = unique(segment$TrialName)[1],
@@ -894,7 +921,8 @@ handle_triangular_test <- function(segment) {
       N_correct = n_correct,
       Ratio = ratio,
       P_value = round(p_value, 4),
-      Significatif_10pct = significatif,
+      Significatif_5pct = significatif_5pct,
+      Significatif_10pct = significatif_10pct,
       IC_inf = round(test_result$conf.int[1], 3),
       IC_sup = round(test_result$conf.int[2], 3)
     )
@@ -906,6 +934,7 @@ handle_triangular_test <- function(segment) {
     return(NULL)
   })
 }
+
 
 # ===== FONCTION D'ANALYSE ITÉRATIVE DES JUGES =====
 analyze_judges_iterative <- function(segment) {
