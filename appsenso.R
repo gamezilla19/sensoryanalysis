@@ -156,24 +156,23 @@ safe_disconnect <- function(con) {
   }
 }
 
-# ===== FONCTIONS DE CRÉATION DES TABLES RACCORDÉES =====
 create_test_info_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
   tryCatch({
-    if(dbExistsTable(con, "Test_Info")) {
-      message("📋 Table Test_Info existe déjà")
+    if(dbExistsTable(con, "test_info")) {  # ✅ MINUSCULES
+      message("📋 Table test_info existe déjà")
       return(TRUE)
     }
     
     create_sql <- "
-    CREATE TABLE IF NOT EXISTS Test_Info (
+    CREATE TABLE IF NOT EXISTS test_info (
       id SERIAL PRIMARY KEY,
       source_name VARCHAR(255) NOT NULL,
+      test_name VARCHAR(255) NOT NULL,
       gmps_type VARCHAR(10),
       gpms_code VARCHAR(100),
       sc_request VARCHAR(50),
-      test_name VARCHAR(255) NOT NULL,
       test_date VARCHAR(20),
       master_customer_name VARCHAR(255),
       country_client VARCHAR(100),
@@ -187,17 +186,17 @@ create_test_info_table <- function(con) {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     
-    CREATE INDEX IF NOT EXISTS idx_test_info_source ON Test_Info(source_name);
-    CREATE INDEX IF NOT EXISTS idx_test_info_test_name ON Test_Info(test_name);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_test_info_unique ON Test_Info(source_name, test_name);
+    CREATE INDEX IF NOT EXISTS idx_test_info_source ON test_info(source_name);
+    CREATE INDEX IF NOT EXISTS idx_test_info_test_name ON test_info(test_name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_test_info_unique ON test_info(source_name, test_name);
     "
     
     dbExecute(con, create_sql)
-    message("✅ Table Test_Info créée avec succès")
+    message("✅ Table test_info créée avec succès")
     return(TRUE)
     
   }, error = function(e) {
-    message("❌ Erreur création table Test_Info : ", e$message)
+    message("❌ Erreur création table test_info : ", e$message)
     return(FALSE)
   })
 }
@@ -206,13 +205,13 @@ create_product_info_metadata_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
   tryCatch({
-    if(dbExistsTable(con, "Product_Info_Metadata")) {
-      message("📋 Table Product_Info_Metadata existe déjà")
+    if(dbExistsTable(con, "product_info_metadata")) {  # ✅ MINUSCULES
+      message("📋 Table product_info_metadata existe déjà")
       return(TRUE)
     }
     
     create_sql <- "
-    CREATE TABLE IF NOT EXISTS Product_Info_Metadata (
+    CREATE TABLE IF NOT EXISTS product_info_metadata (
       id SERIAL PRIMARY KEY,
       source_name VARCHAR(255) NOT NULL,
       product_name VARCHAR(255) NOT NULL,
@@ -224,20 +223,21 @@ create_product_info_metadata_table <- function(con) {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     
-    CREATE INDEX IF NOT EXISTS idx_product_info_meta_source ON Product_Info_Metadata(source_name);
-    CREATE INDEX IF NOT EXISTS idx_product_info_meta_product ON Product_Info_Metadata(product_name);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_product_info_meta_unique ON Product_Info_Metadata(source_name, product_name);
+    CREATE INDEX IF NOT EXISTS idx_product_info_meta_source ON product_info_metadata(source_name);
+    CREATE INDEX IF NOT EXISTS idx_product_info_meta_product ON product_info_metadata(product_name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_product_info_meta_unique ON product_info_metadata(source_name, product_name);
     "
     
     dbExecute(con, create_sql)
-    message("✅ Table Product_Info_Metadata créée avec succès")
+    message("✅ Table product_info_metadata créée avec succès")
     return(TRUE)
     
   }, error = function(e) {
-    message("❌ Erreur création table Product_Info_Metadata : ", e$message)
+    message("❌ Erreur création table product_info_metadata : ", e$message)
     return(FALSE)
   })
 }
+
 
 # ===== FONCTIONS DE VALIDATION (INCHANGÉES) =====
 
@@ -273,6 +273,7 @@ validate_numeric_format <- function(numeric_string) {
 }
 
 # ===== FONCTIONS DE GESTION DES TABLES RACCORDÉES =====
+# ===== FONCTIONS DE GESTION DES TABLES RACCORDÉES (CORRIGÉES) =====
 load_test_info_from_postgres <- function(con) {
   if(is.null(con) || !dbIsValid(con)) {
     return(data.frame(
@@ -297,12 +298,12 @@ load_test_info_from_postgres <- function(con) {
   tryCatch({
     create_test_info_table(con)
     
-    if(dbExistsTable(con, "Test_Info")) {
-      test_info <- dbReadTable(con, "Test_Info")
+    if(dbExistsTable(con, "test_info")) {  # ✅ MINUSCULES
+      test_info <- dbReadTable(con, "test_info")  # ✅ MINUSCULES
       message("📊 Test Info chargé depuis SA_METADATA: ", nrow(test_info), " lignes")
       return(test_info)
     } else {
-      message("⚠️ Table 'Test_Info' non trouvée dans SA_METADATA")
+      message("⚠️ Table 'test_info' non trouvée dans SA_METADATA")
       return(data.frame())
     }
   }, error = function(e) {
@@ -327,12 +328,12 @@ load_product_info_metadata_from_postgres <- function(con) {
   tryCatch({
     create_product_info_metadata_table(con)
     
-    if(dbExistsTable(con, "Product_Info_Metadata")) {
-      product_info <- dbReadTable(con, "Product_Info_Metadata")
+    if(dbExistsTable(con, "product_info_metadata")) {  # ✅ MINUSCULES
+      product_info <- dbReadTable(con, "product_info_metadata")  # ✅ MINUSCULES
       message("📊 Product Info Metadata chargé depuis SA_METADATA: ", nrow(product_info), " lignes")
       return(product_info)
     } else {
-      message("⚠️ Table 'Product_Info_Metadata' non trouvée dans SA_METADATA")
+      message("⚠️ Table 'product_info_metadata' non trouvée dans SA_METADATA")
       return(data.frame())
     }
   }, error = function(e) {
@@ -341,17 +342,17 @@ load_product_info_metadata_from_postgres <- function(con) {
   })
 }
 
-# Fonction pour obtenir les noms de produits uniques depuis Product_Info (créée par le script)
+# Fonction pour obtenir les noms de produits uniques depuis product_info (créée par le script)
 get_unique_product_names <- function(con) {
   if(is.null(con) || !dbIsValid(con)) return(c(""))
   
   tryCatch({
-    if(dbExistsTable(con, "Product_Info")) {
-      raw_data <- dbReadTable(con, "Product_Info")
+    if(dbExistsTable(con, "product_info")) {  # ✅ MINUSCULES
+      raw_data <- dbReadTable(con, "product_info")  # ✅ MINUSCULES
       if("product_name" %in% names(raw_data)) {
         unique_products <- unique(raw_data$product_name)
         unique_products <- unique_products[!is.na(unique_products) & unique_products != ""]
-        message("📋 Produits uniques chargés depuis Product_Info: ", length(unique_products))
+        message("📋 Produits uniques chargés depuis product_info: ", length(unique_products))
         return(c("", sort(unique_products)))
       }
     }
@@ -362,17 +363,17 @@ get_unique_product_names <- function(con) {
   })
 }
 
-# Fonction pour obtenir les sources uniques depuis Product_Info (créée par le script)
+# Fonction pour obtenir les sources uniques depuis product_info (créée par le script)
 get_unique_sources <- function(con) {
   if(is.null(con) || !dbIsValid(con)) return(c(""))
   
   tryCatch({
-    if(dbExistsTable(con, "Product_Info")) {
-      raw_data <- dbReadTable(con, "Product_Info")
+    if(dbExistsTable(con, "product_info")) {  # ✅ MINUSCULES
+      raw_data <- dbReadTable(con, "product_info")  # ✅ MINUSCULES
       if("source_name" %in% names(raw_data)) {
         unique_sources <- unique(raw_data$source_name)
         unique_sources <- unique_sources[!is.na(unique_sources) & unique_sources != ""]
-        message("📋 Sources uniques chargées depuis Product_Info: ", length(unique_sources))
+        message("📋 Sources uniques chargées depuis product_info: ", length(unique_sources))
         return(c("", sort(unique_sources)))
       }
     }
@@ -383,14 +384,14 @@ get_unique_sources <- function(con) {
   })
 }
 
-# Fonction pour obtenir les bases uniques depuis Product_Info (CORRIGÉE)
+# Fonction pour obtenir les bases uniques depuis product_info (CORRIGÉE)
 get_unique_bases <- function(con) {
   if(is.null(con) || !dbIsValid(con)) return(c(""))
   
   tryCatch({
-    # CORRECTION: Chercher d'abord dans Product_Info (du script)
-    if(dbExistsTable(con, "Product_Info")) {
-      raw_data <- dbReadTable(con, "Product_Info")
+    # CORRECTION: Chercher d'abord dans product_info (du script)
+    if(dbExistsTable(con, "product_info")) {  # ✅ MINUSCULES
+      raw_data <- dbReadTable(con, "product_info")  # ✅ MINUSCULES
       if("base" %in% names(raw_data)) {
         unique_bases <- unique(raw_data$base)
         unique_bases <- unique_bases[!is.na(unique_bases) & unique_bases != ""]
@@ -400,9 +401,9 @@ get_unique_bases <- function(con) {
       }
     }
     
-    # Si pas de bases dans Product_Info, chercher dans Product_Info_Metadata
-    if(dbExistsTable(con, "Product_Info_Metadata")) {
-      product_info <- dbReadTable(con, "Product_Info_Metadata")
+    # Si pas de bases dans product_info, chercher dans product_info_metadata
+    if(dbExistsTable(con, "product_info_metadata")) {  # ✅ MINUSCULES
+      product_info <- dbReadTable(con, "product_info_metadata")  # ✅ MINUSCULES
       if("base" %in% names(product_info)) {
         unique_bases <- unique(product_info$base)
         unique_bases <- unique_bases[!is.na(unique_bases) & unique_bases != ""]
@@ -417,6 +418,9 @@ get_unique_bases <- function(con) {
   })
 }
 
+
+
+
 save_test_info_to_postgres <- function(con, test_info_data) {
   if(is.null(con) || !dbIsValid(con)) return(FALSE)
   
@@ -425,13 +429,13 @@ save_test_info_to_postgres <- function(con, test_info_data) {
     
     # Vérifier si l'entrée existe déjà
     existing_check <- dbGetQuery(con, 
-                                 "SELECT COUNT(*) as count FROM Test_Info WHERE source_name = $1 AND test_name = $2",
+                                 "SELECT COUNT(*) as count FROM test_info WHERE source_name = $1 AND test_name = $2",  # ✅ MINUSCULES
                                  params = list(test_info_data$source_name, test_info_data$test_name))
     
     if(existing_check$count > 0) {
       # Mettre à jour l'entrée existante
       update_sql <- "
-      UPDATE Test_Info SET
+      UPDATE test_info SET  
         gmps_type = $3,
         gpms_code = $4,
         sc_request = $5,
@@ -468,7 +472,7 @@ save_test_info_to_postgres <- function(con, test_info_data) {
       message("✅ Test Info mis à jour dans SA_METADATA")
     } else {
       # Insérer nouvelle entrée
-      dbWriteTable(con, "Test_Info", test_info_data, 
+      dbWriteTable(con, "test_info", test_info_data,  # ✅ MINUSCULES
                    append = TRUE, row.names = FALSE)
       message("✅ Test Info sauvegardé vers SA_METADATA: ", nrow(test_info_data), " lignes")
     }
@@ -480,14 +484,14 @@ save_test_info_to_postgres <- function(con, test_info_data) {
   })
 }
 
-# FONCTION CORRIGÉE POUR SAUVEGARDER DIRECTEMENT DANS Product_Info
+# ===== FONCTION UNIQUE POUR SAUVEGARDER DANS product_info (minuscules) =====
 save_product_info_to_postgres <- function(con, product_info_data) {
   if(is.null(con) || !dbIsValid(con)) return(FALSE)
   
   tryCatch({
-    # Mettre à jour directement dans Product_Info (créée par le script)
+    # Mettre à jour directement dans product_info (créée par le script)
     update_sql <- "
-    UPDATE Product_Info SET
+    UPDATE product_info SET  
       code_prod = $3,
       base = $4,
       ref = $5,
@@ -505,7 +509,7 @@ save_product_info_to_postgres <- function(con, product_info_data) {
     ))
     
     if(result > 0) {
-      message("✅ Product Info mis à jour dans Product_Info (", result, " ligne(s))")
+      message("✅ Product Info mis à jour dans product_info (", result, " ligne(s))")
       return(TRUE)
     } else {
       message("⚠️ Aucune ligne mise à jour - vérifiez source_name et product_name")
@@ -518,26 +522,25 @@ save_product_info_to_postgres <- function(con, product_info_data) {
   })
 }
 
-# ===== FONCTIONS DE DÉTECTION DES DONNÉES MANQUANTES RACCORDÉES =====
-# FONCTION CORRIGÉE POUR DÉTECTER LES TEST INFO AVEC CHAMPS VIDES
+# ===== FONCTION UNIQUE POUR DÉTECTER LES TEST INFO MANQUANTS =====
 detect_missing_test_info <- function(con) {
   if(is.null(con) || !dbIsValid(con)) return(data.frame())
   
   tryCatch({
-    # Récupérer tous les tests depuis Product_Info (créée par le script d'analyse)
-    if(!dbExistsTable(con, "Product_Info")) {
-      message("⚠️ Table Product_Info non trouvée")
+    # Récupérer tous les tests depuis product_info (créée par le script d'analyse)
+    if(!dbExistsTable(con, "product_info")) {
+      message("⚠️ Table product_info non trouvée")
       return(data.frame())
     }
     
-    product_data <- dbReadTable(con, "Product_Info")
+    product_data <- dbReadTable(con, "product_info")
     
     if(nrow(product_data) == 0) {
-      message("⚠️ Table Product_Info vide")
+      message("⚠️ Table product_info vide")
       return(data.frame())
     }
     
-    # Extraire les tests uniques depuis Product_Info
+    # Extraire les tests uniques depuis product_info
     existing_tests <- product_data %>%
       select(source_name) %>%
       distinct() %>%
@@ -546,18 +549,33 @@ detect_missing_test_info <- function(con) {
       )
     
     if(nrow(existing_tests) == 0) {
-      message("⚠️ Aucun test trouvé dans Product_Info")
+      message("⚠️ Aucun test trouvé dans product_info")
       return(data.frame())
     }
     
-    # Charger les Test_Info existants
+    # Charger les test_info existants
     existing_test_info <- load_test_info_from_postgres(con)
     
     if(nrow(existing_test_info) == 0) {
-      # Si aucun Test_Info n'existe, tous les tests de Product_Info sont manquants
-      missing_tests <- existing_tests
+      # Si aucun test_info n'existe, tous les tests de product_info sont manquants
+      missing_tests <- existing_tests %>%
+        mutate(
+          gmps_type = "",
+          gpms_code = "",
+          sc_request = "",
+          test_date = "",
+          master_customer_name = "",
+          country_client = "",
+          type_of_test = "",
+          category = "",
+          subsegment = "",
+          methodology = "",
+          panel = "",
+          test_facilities = "",
+          statut = "À compléter"
+        )
     } else {
-      # CORRECTION : Chercher les tests qui existent dans Test_Info mais avec des champs vides
+      # Chercher les tests qui existent dans test_info mais avec des champs vides
       missing_tests <- existing_test_info %>%
         filter(
           # Vérifier si les champs sont vides ou contiennent seulement des espaces
@@ -577,9 +595,30 @@ detect_missing_test_info <- function(con) {
                master_customer_name, country_client, type_of_test, category, 
                subsegment, methodology, panel, test_facilities) %>%
         distinct()
+      
+      # Ajouter les tests de product_info qui n'existent pas du tout dans test_info
+      tests_not_in_test_info <- existing_tests %>%
+        anti_join(existing_test_info, by = c("source_name", "test_name")) %>%
+        mutate(
+          gmps_type = "",
+          gpms_code = "",
+          sc_request = "",
+          test_date = "",
+          master_customer_name = "",
+          country_client = "",
+          type_of_test = "",
+          category = "",
+          subsegment = "",
+          methodology = "",
+          panel = "",
+          test_facilities = ""
+        )
+      
+      # Combiner les deux types de tests manquants
+      missing_tests <- bind_rows(missing_tests, tests_not_in_test_info)
     }
     
-    # Ajouter les champs vides pour les tests manquants et nettoyer les valeurs pour l'affichage
+    # Nettoyer les valeurs pour l'affichage
     if(nrow(missing_tests) > 0) {
       missing_tests <- missing_tests %>%
         mutate(
@@ -601,18 +640,6 @@ detect_missing_test_info <- function(con) {
     }
     
     message("🔍 Tests avec champs vides détectés: ", nrow(missing_tests))
-    
-    # Debug : afficher quelques exemples
-    if(nrow(missing_tests) > 0) {
-      message("📋 Exemples de tests à compléter:")
-      sample_tests <- head(missing_tests, 3)
-      for(i in 1:nrow(sample_tests)) {
-        message("  - ", sample_tests$test_name[i], " (source: ", sample_tests$source_name[i], ")")
-      }
-    } else {
-      message("✅ Tous les tests ont des informations complètes")
-    }
-    
     return(missing_tests)
     
   }, error = function(e) {
@@ -621,27 +648,25 @@ detect_missing_test_info <- function(con) {
   })
 }
 
-
-
-# FONCTION CORRIGÉE POUR DÉTECTER LES CHAMPS VIDES DANS Product_Info
+# ===== FONCTION UNIQUE POUR DÉTECTER LES PRODUCT INFO MANQUANTS =====
 detect_missing_product_info <- function(con) {
   if(is.null(con) || !dbIsValid(con)) return(data.frame())
   
   tryCatch({
-    # Récupérer tous les produits depuis Product_Info (créée par le script d'analyse)
-    if(!dbExistsTable(con, "Product_Info")) {
-      message("⚠️ Table Product_Info non trouvée")
+    # Récupérer tous les produits depuis product_info (créée par le script d'analyse)
+    if(!dbExistsTable(con, "product_info")) {
+      message("⚠️ Table product_info non trouvée")
       return(data.frame())
     }
     
-    raw_data <- dbReadTable(con, "Product_Info")
+    raw_data <- dbReadTable(con, "product_info")
     
     if(nrow(raw_data) == 0) {
-      message("⚠️ Table Product_Info vide")
+      message("⚠️ Table product_info vide")
       return(data.frame())
     }
     
-    # CORRECTION : Chercher les champs vides OU NULL directement dans Product_Info
+    # Chercher les champs vides OU NULL directement dans product_info
     missing_products <- raw_data %>%
       filter(
         # Vérifier si les champs sont NULL, NA, vides ou contiennent seulement des espaces
@@ -679,6 +704,7 @@ detect_missing_product_info <- function(con) {
     return(data.frame())
   })
 }
+
 
 # ===== INTERFACE UTILISATEUR (INCHANGÉE) =====
 ui <- dashboardPage(
@@ -1828,6 +1854,7 @@ server <- function(input, output, session) {
   
   # ===== TABLEAUX DES TABLES SA_METADATA =====
   # CORRECTION DE L'AFFICHAGE DU TABLEAU TEST_INFO
+  # ===== TABLEAUX DES TABLES SA_METADATA (CORRIGÉS) =====
   output$test_info_table <- DT::renderDataTable({
     con <- postgres_con()
     if(!is.null(con)) {
@@ -1852,20 +1879,19 @@ server <- function(input, output, session) {
             rownames = FALSE
           )
       } else {
-        data.frame(Message = "Aucune donnée Test_Info disponible")
+        data.frame(Message = "Aucune donnée test_info disponible")
       }
     } else {
       data.frame(Message = "Connexion SA_METADATA requise")
     }
   })
   
-  
   output$product_info_script_table <- DT::renderDataTable({
     con <- postgres_con()
     if(!is.null(con)) {
       tryCatch({
-        if(dbExistsTable(con, "Product_Info")) {
-          product_info <- dbReadTable(con, "Product_Info")
+        if(dbExistsTable(con, "product_info")) {  # ✅ MINUSCULES
+          product_info <- dbReadTable(con, "product_info")  # ✅ MINUSCULES
           if(nrow(product_info) > 0) {
             product_info %>%
               DT::datatable(
@@ -1877,10 +1903,10 @@ server <- function(input, output, session) {
                 rownames = FALSE
               )
           } else {
-            data.frame(Message = "Table Product_Info vide")
+            data.frame(Message = "Table product_info vide")
           }
         } else {
-          data.frame(Message = "Table Product_Info non trouvée")
+          data.frame(Message = "Table product_info non trouvée")
         }
       }, error = function(e) {
         data.frame(Message = paste("Erreur:", e$message))
@@ -1940,16 +1966,16 @@ server <- function(input, output, session) {
       tryCatch({
         stats <- c()
         
-        # Statistiques Test_Info
-        if(dbExistsTable(con, "Test_Info")) {
-          test_count <- dbGetQuery(con, "SELECT COUNT(*) as count FROM Test_Info")$count
-          stats <- c(stats, paste("Test_Info:", test_count, "lignes"))
+        # ✅ CORRIGER : Statistiques test_info (minuscules)
+        if(dbExistsTable(con, "test_info")) {
+          test_count <- dbGetQuery(con, "SELECT COUNT(*) as count FROM test_info")$count
+          stats <- c(stats, paste("test_info:", test_count, "lignes"))
         }
         
-        # Statistiques Product_Info (du script)
-        if(dbExistsTable(con, "Product_Info")) {
-          product_count <- dbGetQuery(con, "SELECT COUNT(*) as count FROM Product_Info")$count
-          stats <- c(stats, paste("Product_Info:", product_count, "lignes"))
+        # ✅ CORRIGER : Statistiques product_info (minuscules)
+        if(dbExistsTable(con, "product_info")) {
+          product_count <- dbGetQuery(con, "SELECT COUNT(*) as count FROM product_info")$count
+          stats <- c(stats, paste("product_info:", product_count, "lignes"))
         }
         
         # Statistiques des données manquantes
@@ -1969,6 +1995,7 @@ server <- function(input, output, session) {
       "Connexion SA_METADATA requise"
     }
   })
+  
   
   # ===== TEST CONNEXION =====
   observeEvent(input$test_postgres_btn, {
