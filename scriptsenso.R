@@ -16,135 +16,99 @@ suppressPackageStartupMessages({
   library(stringr)
   library(digest)
 })
+# ===== FONCTION DE DIAGNOSTIC MISE À JOUR =====
+# ===== FONCTION DE DIAGNOSTIC MISE À JOUR =====
 debug_database_connections <- function() {
-  
   cat("\n🔍 DIAGNOSTIC COMPLET DES BASES DE DONNÉES\n")
-  
   cat(paste(rep("=", 50), collapse = ""), "\n")
   
-  
-  
   # 1. Test connexion serveur
-  
   cat("\n1. Test connexion serveur PostgreSQL...\n")
-  
   con_server <- tryCatch({
-    
     dbConnect(RPostgres::Postgres(),
-              
               host = DB_CONFIG$host,
-              
               port = DB_CONFIG$port,
-              
               user = DB_CONFIG$user,
-              
               password = DB_CONFIG$password,
-              
               dbname = "postgres")
-    
   }, error = function(e) {
-    
     cat("❌ ERREUR serveur:", e$message, "\n")
-    
     return(NULL)
-    
   })
   
-  
-  
   if(is.null(con_server)) {
-    
     cat("🚨 ARRÊT: Impossible de se connecter au serveur PostgreSQL\n")
-    
     return(FALSE)
-    
   }
-  
-  
   
   cat("✅ Connexion serveur OK\n")
   
-  
-  
   # 2. Lister les bases de données existantes
-  
   cat("\n2. Bases de données existantes sur le serveur:\n")
-  
   existing_dbs <- dbGetQuery(con_server, "SELECT datname FROM pg_database WHERE datistemplate = false;")
-  
   for(db_name in existing_dbs$datname) {
-    
     cat("  -", db_name, "\n")
-    
   }
-  
-  
   
   # 3. Vérifier chaque base de données nécessaire
-  
   cat("\n3. Vérification des bases de données nécessaires:\n")
-  
   required_dbs <- c("SA_RAW_DATA", "SA_RESULTS_DATA", "SA_JUDGES", "SA_METADATA")
   
-  
-  
   for(db in required_dbs) {
-    
     cat("\n--- Base de données:", db, "---\n")
-    
     if(db %in% existing_dbs$datname) {
-      
       cat("✅", db, "existe sur le serveur\n")
       
-      
-      
       # Test connexion à cette base de données
-      
       con_test <- create_db_connection(db)
-      
       if(!is.null(con_test)) {
-        
         cat("✅ Connexion à", db, "réussie\n")
         
-        
-        
         # Lister les tables dans cette base de données
-        
         tables <- dbListTables(con_test)
-        
         if(length(tables) > 0) {
-          
           cat("   Tables dans", db, ":", paste(tables, collapse = ", "), "\n")
           
+          # Pour SA_RESULTS_DATA, vérifier les tables spécialisées
+          if(db == "SA_RESULTS_DATA") {
+            expected_tables <- c("strengthandmo_results", "proximity_results", "triangulaire_results")
+            for(expected_table in expected_tables) {
+              if(expected_table %in% tables) {
+                cat("   ✅", expected_table, "présente\n")
+              } else {
+                cat("   ⚠️", expected_table, "manquante (sera créée automatiquement)\n")
+              }
+            }
+          }
+          
+          # Pour SA_METADATA, vérifier les tables spécialisées
+          if(db == "SA_METADATA") {
+            expected_tables <- c("product_info", "test_info", "databrute")
+            for(expected_table in expected_tables) {
+              if(expected_table %in% tables) {
+                cat("   ✅", expected_table, "présente\n")
+              } else {
+                cat("   ⚠️", expected_table, "manquante (sera créée automatiquement)\n")
+              }
+            }
+          }
         } else {
-          
           cat("   ⚠️  Base", db, "vide (aucune table)\n")
-          
         }
-        
         safe_disconnect(con_test)
-        
       } else {
-        
         cat("❌ Impossible de se connecter à la base", db, "\n")
-        
       }
-      
     } else {
-      
       cat("❌ Base de données", db, "N'EXISTE PAS sur le serveur\n")
-      
     }
-    
   }
   
-  
-  
   safe_disconnect(con_server)
-  
   return(TRUE)
-  
 }
+
+
 
 
 
@@ -272,170 +236,180 @@ create_raw_data_table <- function(con) {
 }
 
 
+# ===== FONCTIONS DE CRÉATION DES TABLES DE RÉSULTATS PAR TYPE =====
 
-create_results_table <- function(con) {
-  
+create_strength_results_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
-  
-  
   tryCatch({
-    
-    # Table pour les résultats de tests (tous types)
-    
-    if(!dbExistsTable(con, "test_results")) {
-      
-      dbExecute(con, "CREATE TABLE IF NOT EXISTS test_results (
-
+    if(!dbExistsTable(con, "strengthandmo_results")) {  # ✅ MINUSCULES
+      dbExecute(con, "CREATE TABLE IF NOT EXISTS strengthandmo_results (
         id SERIAL PRIMARY KEY,
-
         source_name VARCHAR(255) NOT NULL,
-
         idtest VARCHAR(255),
-
         test_type VARCHAR(50),
-
         segment VARCHAR(500),
-
         segment_id INTEGER,
-
         product_name VARCHAR(255),
-
         classe VARCHAR(10),
-
         mean_value NUMERIC,
-
         sd_value NUMERIC,
-
         n_observations INTEGER,
-
         anova_5pct BOOLEAN,
-
         anova_10pct BOOLEAN,
-
-        reference VARCHAR(255),
-
-        candidate VARCHAR(255),
-
-        n_total INTEGER,
-
-        n_correct INTEGER,
-
-        p_value NUMERIC,
-
-        decision VARCHAR(50),
-
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-
       )")
       
+      # Créer les index séparément
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_strengthmo_source ON strengthandmo_results(source_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_strengthmo_type ON strengthandmo_results(test_type)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_strengthmo_product ON strengthandmo_results(product_name)")
       
+      message("Table strengthandmo_results créée avec succès")
+    }
+    return(TRUE)
+  }, error = function(e) {
+    message("Erreur création table strengthandmo_results : ", e$message)
+    return(FALSE)
+  })
+}
+
+
+create_proximity_results_table <- function(con) {
+  if(is.null(con)) return(FALSE)
+  
+  tryCatch({
+    if(!dbExistsTable(con, "proximity_results")) {  # ✅ MINUSCULES
+      dbExecute(con, "CREATE TABLE IF NOT EXISTS proximity_results (
+        id SERIAL PRIMARY KEY,
+        source_name VARCHAR(255) NOT NULL,
+        idtest VARCHAR(255),
+        test_type VARCHAR(50),
+        segment VARCHAR(500),
+        segment_id INTEGER,
+        product_name VARCHAR(255),
+        classe VARCHAR(10),
+        mean_value NUMERIC,
+        sd_value NUMERIC,
+        n_observations INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )")
       
       # Créer les index séparément
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_proximity_source ON proximity_results(source_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_proximity_type ON proximity_results(test_type)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_proximity_product ON proximity_results(product_name)")
       
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_results_source ON test_results(source_name)")
-      
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_results_type ON test_results(test_type)")
-      
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_results_product ON test_results(product_name)")
-      
-      
-      
-      message("Table test_results créée avec succès")
-      
+      message("Table proximity_results créée avec succès")
     }
-    
-    
-    
     return(TRUE)
-    
-    
-    
   }, error = function(e) {
-    
-    message("Erreur création table test_results : ", e$message)
-    
+    message("Erreur création table proximity_results : ", e$message)
     return(FALSE)
-    
   })
+}
+
+
+create_triangular_results_table <- function(con) {
+  if(is.null(con)) return(FALSE)
   
+  tryCatch({
+    if(!dbExistsTable(con, "triangulaire_results")) {  # ✅ MINUSCULES
+      dbExecute(con, "CREATE TABLE IF NOT EXISTS triangulaire_results (
+        id SERIAL PRIMARY KEY,
+        source_name VARCHAR(255) NOT NULL,
+        idtest VARCHAR(255),
+        test_type VARCHAR(50),
+        reference VARCHAR(255),
+        candidate VARCHAR(255),
+        n_total INTEGER,
+        n_correct INTEGER,
+        p_value NUMERIC,
+        decision VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )")
+      
+      # Créer les index séparément
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_triangular_source ON triangulaire_results(source_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_triangular_type ON triangulaire_results(test_type)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_triangular_decision ON triangulaire_results(decision)")
+      
+      message("Table triangulaire_results créée avec succès")
+    }
+    return(TRUE)
+  }, error = function(e) {
+    message("Erreur création table triangulaire_results : ", e$message)
+    return(FALSE)
+  })
+}
+
+
+
+# ===== FONCTION POUR DÉTERMINER LE NOM DE LA TABLE =====
+get_results_table_name <- function(test_type) {
+  switch(test_type,
+         "Strength" = "strengthandmo_results",           # ✅ MINUSCULES
+         "Strength with Malodour" = "strengthandmo_results", # ✅ MINUSCULES
+         "Proximity" = "proximity_results",              # ✅ MINUSCULES
+         "Triangular" = "triangulaire_results",          # ✅ MINUSCULES
+         "strengthandmo_results"  # Par défaut en minuscules
+  )
+}
+
+
+# ===== FONCTION POUR CRÉER LA TABLE APPROPRIÉE =====
+create_appropriate_results_table <- function(con, test_type) {
+  switch(test_type,
+         "Strength" = create_strength_results_table(con),
+         "Strength with Malodour" = create_strength_results_table(con),
+         "Proximity" = create_proximity_results_table(con),
+         "Triangular" = create_triangular_results_table(con),
+         create_strength_results_table(con)  # Par défaut
+  )
 }
 
 
 
 create_judges_table <- function(con) {
-  
   if(is.null(con)) return(FALSE)
   
-  
-  
   tryCatch({
-    
     if(!dbExistsTable(con, "judge_tracking")) {
-      
       dbExecute(con, "CREATE TABLE IF NOT EXISTS judge_tracking (
-
         id SERIAL PRIMARY KEY,
-
         source_name VARCHAR(255) NOT NULL,
-
         cj VARCHAR(100) NOT NULL,
-
         nb_evaluations INTEGER,
-
         moyenne_score NUMERIC,
-
         attributes_evalues INTEGER,
-
         produits_evalues INTEGER,
-
-        nb_tests_total INTEGER,
-
-        nb_tests_conserve INTEGER,
-
+        nb_segments_total INTEGER,
+        nb_segments_conserve INTEGER,
         taux_conservation NUMERIC,
-
-        judge_status VARCHAR(50),
-
         date_analyse DATE,
-
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-
       )")
       
-      
-      
       # Créer les index séparément
-      
       dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_source ON judge_tracking(source_name)")
-      
       dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_cj ON judge_tracking(cj)")
-      
-      
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_taux ON judge_tracking(taux_conservation)")
       
       message("Table judge_tracking créée avec succès")
-      
     }
-    
-    
     
     return(TRUE)
     
-    
-    
   }, error = function(e) {
-    
     message("Erreur création table judge_tracking : ", e$message)
-    
     return(FALSE)
-    
   })
-  
 }
+
 
 
 
@@ -538,14 +512,98 @@ save_raw_data_to_db <- function(raw_data, source_name) {
     return(FALSE)
   })
 }
+# ===== FONCTION DE SAUVEGARDE DES DONNÉES BRUTES AVEC STATUT JUGES =====
+save_raw_data_with_judge_status <- function(raw_data, source_name, judge_removal_info_file = NULL) {
+  con <- create_db_connection(DATABASES$RAW_DATA)
+  if(is.null(con)) return(FALSE)
+  
+  tryCatch({
+    # Créer la table si nécessaire
+    create_raw_data_table(con)
+    
+    # Préparer les données de base
+    raw_data_db <- raw_data %>%
+      mutate(
+        source_name = source_name,
+        trial_name = TrialName,
+        cj = CJ,
+        product_name = ProductName,
+        attribute_name = AttributeName,
+        nom_fonction = NomFonction,
+        value = as.numeric(Value),
+        judge_status = "conserved"  # Valeur par défaut
+      )
+    
+    # Si on a des informations sur les juges retirés, les appliquer
+    if(!is.null(judge_removal_info_file) && nrow(judge_removal_info_file) > 0) {
+      message("Application du statut des juges retirés...")
+      
+      # Pour chaque juge retiré, mettre à jour le statut
+      for(i in 1:nrow(judge_removal_info_file)) {
+        removed_judges <- unlist(strsplit(judge_removal_info_file$RemovedJudges[i], ", "))
+        segment_name <- judge_removal_info_file$Segment[i]
+        
+        # Extraire AttributeName et NomFonction du segment
+        segment_parts <- strsplit(segment_name, " - ")[[1]]
+        if(length(segment_parts) >= 2) {
+          attr_name <- segment_parts[1]
+          nom_fonction <- segment_parts[2]
+          
+          # Mettre à jour le statut pour ces juges dans ce segment
+          raw_data_db <- raw_data_db %>%
+            mutate(judge_status = case_when(
+              cj %in% removed_judges & 
+                attribute_name == attr_name & 
+                nom_fonction == nom_fonction ~ "removed",
+              TRUE ~ judge_status
+            ))
+        }
+      }
+      
+      nb_removed <- sum(raw_data_db$judge_status == "removed")
+      message("Statut mis à jour pour ", nb_removed, " lignes (juges retirés)")
+    }
+    
+    # Sélectionner les colonnes finales
+    raw_data_db <- raw_data_db %>%
+      select(source_name, trial_name, cj, product_name, attribute_name, 
+             nom_fonction, value, judge_status)
+    
+    # Supprimer les données existantes pour ce fichier source
+    dbExecute(con, "DELETE FROM rawdata WHERE source_name = $1", params = list(source_name))
+    
+    # Insérer les nouvelles données
+    dbWriteTable(con, "rawdata", raw_data_db, append = TRUE, row.names = FALSE)
+    
+    nb_conserved <- sum(raw_data_db$judge_status == "conserved")
+    nb_removed <- sum(raw_data_db$judge_status == "removed")
+    
+    message("Données brutes sauvegardées pour : ", source_name, 
+            " (", nrow(raw_data_db), " lignes total, ",
+            nb_conserved, " conservées, ", nb_removed, " retirées)")
+    
+    safe_disconnect(con)
+    return(TRUE)
+    
+  }, error = function(e) {
+    message("Erreur sauvegarde données brutes avec statut : ", e$message)
+    safe_disconnect(con)
+    return(FALSE)
+  })
+}
 
 
+# ===== FONCTION DE SAUVEGARDE MODIFIÉE =====
 save_results_to_db <- function(results_data, source_name, test_type) {
   con <- create_db_connection(DATABASES$RESULTS)
   if(is.null(con)) return(FALSE)
   
   tryCatch({
-    create_results_table(con)
+    # Créer la table appropriée selon le type de test
+    create_appropriate_results_table(con, test_type)
+    
+    # Déterminer le nom de la table
+    table_name <- get_results_table_name(test_type)
     
     # Adapter les données selon le type de test
     if(test_type == "Triangular") {
@@ -564,8 +622,26 @@ save_results_to_db <- function(results_data, source_name, test_type) {
         select(source_name, idtest, test_type, reference, candidate, 
                n_total, n_correct, p_value, decision)
       
+    } else if(test_type == "Proximity") {
+      # Tests de proximité (sans colonnes ANOVA)
+      results_db <- results_data %>%
+        mutate(
+          source_name = source_name,
+          test_type = test_type,
+          idtest = IDTEST,
+          segment = SEGMENT,
+          segment_id = IDSEGMENT,
+          product_name = PRODUCT,
+          classe = CLASSE,
+          mean_value = MEAN,
+          sd_value = SD,
+          n_observations = N
+        ) %>%
+        select(source_name, idtest, test_type, segment, segment_id, product_name,
+               classe, mean_value, sd_value, n_observations)
+      
     } else {
-      # Tests standard (Strength, Proximity, Strength with Malodour)
+      # Tests standard (Strength, Strength with Malodour) - avec colonnes ANOVA
       results_db <- results_data %>%
         mutate(
           source_name = source_name,
@@ -585,22 +661,25 @@ save_results_to_db <- function(results_data, source_name, test_type) {
                classe, mean_value, sd_value, n_observations, anova_5pct, anova_10pct)
     }
     
-    # Supprimer les résultats existants pour ce fichier
-    dbExecute(con, "DELETE FROM test_results WHERE source_name = $1", params = list(source_name))
+    # Supprimer les résultats existants pour ce fichier dans la table appropriée
+    dbExecute(con, paste0("DELETE FROM ", table_name, " WHERE source_name = $1"), 
+              params = list(source_name))
     
-    # Insérer les nouveaux résultats
-    dbWriteTable(con, "test_results", results_db, append = TRUE, row.names = FALSE)
+    # Insérer les nouveaux résultats dans la table appropriée
+    dbWriteTable(con, table_name, results_db, append = TRUE, row.names = FALSE)
     
-    message("Résultats sauvegardés (", test_type, ") pour : ", source_name, " (", nrow(results_db), " lignes)")
+    message("Résultats sauvegardés (", test_type, ") dans ", table_name, " pour : ", 
+            source_name, " (", nrow(results_db), " lignes)")
     safe_disconnect(con)
     return(TRUE)
     
   }, error = function(e) {
-    message("Erreur sauvegarde résultats : ", e$message)
+    message("Erreur sauvegarde résultats dans ", table_name, " : ", e$message)
     safe_disconnect(con)
     return(FALSE)
   })
 }
+
 
 save_judges_to_db <- function(judge_data, source_name) {
   con <- create_db_connection(DATABASES$JUDGES)
@@ -609,7 +688,7 @@ save_judges_to_db <- function(judge_data, source_name) {
   tryCatch({
     create_judges_table(con)
     
-    # Préparer les données des juges
+    # Préparer les données des juges SANS judge_status
     judges_db <- judge_data %>%
       mutate(
         source_name = source_name,
@@ -618,15 +697,14 @@ save_judges_to_db <- function(judge_data, source_name) {
         moyenne_score = ifelse("MoyenneScore" %in% names(.), MoyenneScore, NA),
         attributes_evalues = ifelse("AttributesEvalues" %in% names(.), AttributesEvalues, NA),
         produits_evalues = ifelse("ProduitsEvalues" %in% names(.), ProduitsEvalues, NA),
-        nb_tests_total = ifelse("NbTestsTotal" %in% names(.), NbTestsTotal, NA),
-        nb_tests_conserve = ifelse("NbTestsConserve" %in% names(.), NbTestsConserve, NA),
+        nb_segments_total = ifelse("NbSegmentsTotal" %in% names(.), NbSegmentsTotal, NA),
+        nb_segments_conserve = ifelse("NbSegmentsConserve" %in% names(.), NbSegmentsConserve, NA),
         taux_conservation = ifelse("TauxConservation" %in% names(.), TauxConservation, NA),
-        judge_status = ifelse("JudgeStatus" %in% names(.), JudgeStatus, "conserved"),
         date_analyse = Sys.Date()
       ) %>%
       select(source_name, cj, nb_evaluations, moyenne_score, attributes_evalues,
-             produits_evalues, nb_tests_total, nb_tests_conserve, taux_conservation,
-             judge_status, date_analyse)
+             produits_evalues, nb_segments_total, nb_segments_conserve, taux_conservation,
+             date_analyse)
     
     # Supprimer les données existantes pour ce fichier
     dbExecute(con, "DELETE FROM judge_tracking WHERE source_name = $1", params = list(source_name))
@@ -645,15 +723,16 @@ save_judges_to_db <- function(judge_data, source_name) {
   })
 }
 
+
 # ===== CRÉATION DES 2 TABLES POUR L'APPLICATION SHINY =====
 
-# Table Product_Info (pour détecter les produits à compléter)
+# ===== CORRECTION DES NOMS DE TABLES METADATA =====
 create_product_info_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
   tryCatch({
-    if(!dbExistsTable(con, "Product_Info")) {
-      dbExecute(con, "CREATE TABLE IF NOT EXISTS Product_Info (
+    if(!dbExistsTable(con, "product_info")) {  # Minuscules
+      dbExecute(con, "CREATE TABLE IF NOT EXISTS product_info (
         id SERIAL PRIMARY KEY,
         source_name VARCHAR(255) NOT NULL,
         product_name VARCHAR(255) NOT NULL,
@@ -666,26 +745,25 @@ create_product_info_table <- function(con) {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )")
       
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_product_info_source ON Product_Info(source_name)")
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_product_info_product ON Product_Info(product_name)")
-      dbExecute(con, "CREATE UNIQUE INDEX IF NOT EXISTS idx_product_info_unique ON Product_Info(source_name, product_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_product_info_source ON product_info(source_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_product_info_product ON product_info(product_name)")
+      dbExecute(con, "CREATE UNIQUE INDEX IF NOT EXISTS idx_product_info_unique ON product_info(source_name, product_name)")
       
-      message("Table Product_Info créée avec succès dans SA_METADATA")
+      message("Table product_info créée avec succès dans SA_METADATA")
     }
     return(TRUE)
   }, error = function(e) {
-    message("Erreur création table Product_Info : ", e$message)
+    message("Erreur création table product_info : ", e$message)
     return(FALSE)
   })
 }
 
-# Table Test_Info (pour détecter les tests à compléter)
 create_test_info_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
   tryCatch({
-    if(!dbExistsTable(con, "Test_Info")) {
-      dbExecute(con, "CREATE TABLE IF NOT EXISTS Test_Info (
+    if(!dbExistsTable(con, "test_info")) {  # Minuscules
+      dbExecute(con, "CREATE TABLE IF NOT EXISTS test_info (
         id SERIAL PRIMARY KEY,
         source_name VARCHAR(255) NOT NULL,
         test_name VARCHAR(255) NOT NULL,
@@ -705,22 +783,24 @@ create_test_info_table <- function(con) {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )")
       
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_test_info_source ON Test_Info(source_name)")
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_test_info_test_name ON Test_Info(test_name)")
-      dbExecute(con, "CREATE UNIQUE INDEX IF NOT EXISTS idx_test_info_unique ON Test_Info(source_name, test_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_test_info_source ON test_info(source_name)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_test_info_test_name ON test_info(test_name)")
+      dbExecute(con, "CREATE UNIQUE INDEX IF NOT EXISTS idx_test_info_unique ON test_info(source_name, test_name)")
       
-      message("Table Test_Info créée avec succès dans SA_METADATA")
+      message("Table test_info créée avec succès dans SA_METADATA")
     }
     return(TRUE)
   }, error = function(e) {
-    message("Erreur création table Test_Info : ", e$message)
+    message("Erreur création table test_info : ", e$message)
     return(FALSE)
   })
 }
 
+
 # ===== FONCTIONS DE SAUVEGARDE AVEC ENREGISTREMENTS VIDES =====
 
 # Sauvegarder Product_Info avec tous les champs (vides à remplir par l'app)
+# ===== FONCTIONS DE SAUVEGARDE CORRIGÉES =====
 save_product_info_complete <- function(raw_data, source_name) {
   con <- create_db_connection(DATABASES$METADATA)
   if(is.null(con)) return(FALSE)
@@ -736,31 +816,30 @@ save_product_info_complete <- function(raw_data, source_name) {
         source_name = source_name,
         product_name = ProductName,
         idtest = TrialName,
-        code_prod = "",      # Champ vide à remplir par l'app
-        base = "",           # Champ vide à remplir par l'app
-        ref = "",            # Champ vide à remplir par l'app
-        dosage = ""          # Champ vide à remplir par l'app
+        code_prod = "",
+        base = "",
+        ref = "",
+        dosage = ""
       ) %>%
       select(source_name, product_name, idtest, code_prod, base, ref, dosage)
     
     # Supprimer les entrées existantes pour ce source_name
-    dbExecute(con, "DELETE FROM Product_Info WHERE source_name = $1", params = list(source_name))
+    dbExecute(con, "DELETE FROM product_info WHERE source_name = $1", params = list(source_name))
     
     # Insérer les nouvelles données
-    dbWriteTable(con, "Product_Info", product_info, append = TRUE, row.names = FALSE)
+    dbWriteTable(con, "product_info", product_info, append = TRUE, row.names = FALSE)
     
     message("Product_Info complet sauvegardé : ", source_name, " (", nrow(product_info), " produits)")
     safe_disconnect(con)
     return(TRUE)
     
   }, error = function(e) {
-    message("Erreur sauvegarde Product_Info : ", e$message)
+    message("Erreur sauvegarde product_info : ", e$message)
     safe_disconnect(con)
     return(FALSE)
   })
 }
 
-# Sauvegarder Test_Info avec tous les champs (vides à remplir par l'app)
 save_test_info_complete <- function(raw_data, source_name) {
   con <- create_db_connection(DATABASES$METADATA)
   if(is.null(con)) return(FALSE)
@@ -775,18 +854,18 @@ save_test_info_complete <- function(raw_data, source_name) {
       mutate(
         source_name = source_name,
         test_name = TrialName,
-        gmps_type = "",              # Champ vide à remplir par l'app
-        gpms_code = "",              # Champ vide à remplir par l'app
-        sc_request = "",             # Champ vide à remplir par l'app
-        test_date = "",              # Champ vide à remplir par l'app
-        master_customer_name = "",   # Champ vide à remplir par l'app
-        country_client = "",         # Champ vide à remplir par l'app
-        type_of_test = "",           # Champ vide à remplir par l'app
-        category = "",               # Champ vide à remplir par l'app
-        subsegment = "",             # Champ vide à remplir par l'app
-        methodology = "",            # Champ vide à remplir par l'app
-        panel = "",                  # Champ vide à remplir par l'app
-        test_facilities = ""         # Champ vide à remplir par l'app
+        gmps_type = "",
+        gpms_code = "",
+        sc_request = "",
+        test_date = "",
+        master_customer_name = "",
+        country_client = "",
+        type_of_test = "",
+        category = "",
+        subsegment = "",
+        methodology = "",
+        panel = "",
+        test_facilities = ""
       ) %>%
       select(-TrialName)
     
@@ -795,12 +874,12 @@ save_test_info_complete <- function(raw_data, source_name) {
       test_record <- test_info[i, ]
       
       existing <- dbGetQuery(con, 
-                             "SELECT COUNT(*) as count FROM Test_Info WHERE source_name = $1 AND test_name = $2",
+                             "SELECT COUNT(*) as count FROM test_info WHERE source_name = $1 AND test_name = $2",
                              params = list(test_record$source_name, test_record$test_name))
       
       if(existing$count == 0) {
         # Insérer l'enregistrement vide
-        dbWriteTable(con, "Test_Info", test_record, append = TRUE, row.names = FALSE)
+        dbWriteTable(con, "test_info", test_record, append = TRUE, row.names = FALSE)
       }
     }
     
@@ -809,44 +888,14 @@ save_test_info_complete <- function(raw_data, source_name) {
     return(TRUE)
     
   }, error = function(e) {
-    message("Erreur sauvegarde Test_Info : ", e$message)
+    message("Erreur sauvegarde test_info : ", e$message)
     safe_disconnect(con)
     return(FALSE)
   })
 }
 
-# ===== FONCTION DE DÉTERMINATION DU TYPE DE TEST (MODIFIÉE) =====
-determine_test_type <- function(segments) {
-  # Vérifier s'il y a des tests triangulaires
-  triangular_segments <- segments[sapply(segments, function(seg) {
-    !is.na(seg$NomFonction[1]) && str_detect(seg$NomFonction[1], "Triangulaire|triangle")
-  })]
-  
-  if(length(triangular_segments) > 0) {
-    return("Triangular")
-  }
-  
-  # Vérifier s'il y a des tests de proximité
-  proximity_segments <- segments[sapply(segments, function(seg) {
-    !is.na(seg$AttributeName[1]) && str_detect(str_to_lower(seg$AttributeName[1]), "prox")
-  })]
-  
-  if(length(proximity_segments) > 0) {
-    return("Proximity")
-  }
-  
-  # Vérifier s'il y a des tests MO (odeur corporelle)
-  mo_segments <- segments[sapply(segments, function(seg) {
-    !is.na(seg$AttributeName[1]) && str_detect(str_to_lower(seg$AttributeName[1]), "odeur corporell")
-  })]
-  
-  if(length(mo_segments) > 0) {
-    return("Strength with Malodour")
-  }
-  
-  # Par défaut, test de force (Strength)
-  return("Strength")
-}
+
+
 
 # ===== INITIALISATION =====
 message("Début analyse avec intégration multi-databases: ", Sys.time())
@@ -982,7 +1031,6 @@ validate_data_consistency <- function(file_data) {
   return(issues)
 }
 
-# ===== FONCTION CRÉATION TABLE TRACKING JUGES =====
 create_judge_tracking_table <- function(all_judge_info, all_raw_data) {
   tryCatch({
     if(nrow(all_raw_data) == 0) {
@@ -993,6 +1041,7 @@ create_judge_tracking_table <- function(all_judge_info, all_raw_data) {
       ))
     }
     
+    # Calcul des statistiques de base par juge
     judge_participation <- all_raw_data %>%
       group_by(SourceFile, CJ) %>%
       summarise(
@@ -1002,36 +1051,53 @@ create_judge_tracking_table <- function(all_judge_info, all_raw_data) {
         ProduitsEvalues = n_distinct(ProductName, na.rm = TRUE),
         .groups = 'drop'
       ) %>%
-      mutate(
-        DateAnalyse = Sys.Date()
+      mutate(DateAnalyse = Sys.Date())
+    
+    # Calculer le nombre total de segments par fichier/juge
+    segments_per_judge <- all_raw_data %>%
+      group_by(SourceFile, CJ) %>%
+      summarise(
+        NbSegmentsTotal = n_distinct(paste(AttributeName, NomFonction, sep = " - ")),
+        .groups = 'drop'
       )
     
+    # Calculer le nombre de segments où le juge a été conservé
     if(nrow(all_judge_info) > 0 && "RemovedJudges" %in% names(all_judge_info)) {
-      judge_removal_summary <- all_judge_info %>%
+      # Créer une table des juges retirés par segment
+      judge_removal_by_segment <- all_judge_info %>%
         separate_rows(RemovedJudges, sep = ", ") %>%
         filter(RemovedJudges != "" & !is.na(RemovedJudges)) %>%
         select(File, Segment, RemovedJudges) %>%
         rename(SourceFile = File, CJ = RemovedJudges) %>%
-        mutate(JudgeStatus = "removed")
+        group_by(SourceFile, CJ) %>%
+        summarise(NbSegmentsRetire = n(), .groups = 'drop')
       
-      judge_tracking <- judge_participation %>%
-        left_join(judge_removal_summary, by = c("SourceFile", "CJ")) %>%
+      # Joindre avec les segments totaux
+      segments_conservation <- segments_per_judge %>%
+        left_join(judge_removal_by_segment, by = c("SourceFile", "CJ")) %>%
         mutate(
-          JudgeStatus = coalesce(JudgeStatus, "conserved")
+          NbSegmentsRetire = coalesce(NbSegmentsRetire, 0),
+          NbSegmentsConserve = NbSegmentsTotal - NbSegmentsRetire,
+          TauxConservation = round(NbSegmentsConserve / NbSegmentsTotal, 3)
         )
+      
     } else {
-      judge_tracking <- judge_participation %>%
-        mutate(JudgeStatus = "conserved")
+      # Aucun juge retiré
+      segments_conservation <- segments_per_judge %>%
+        mutate(
+          NbSegmentsRetire = 0,
+          NbSegmentsConserve = NbSegmentsTotal,
+          TauxConservation = 1.000
+        )
     }
     
-    judge_tracking <- judge_tracking %>%
-      group_by(CJ) %>%
-      mutate(
-        NbTestsTotal = n(),
-        NbTestsConserve = sum(JudgeStatus == "conserved", na.rm = TRUE),
-        TauxConservation = round(NbTestsConserve / NbTestsTotal, 3)
-      ) %>%
-      ungroup()
+    # Joindre tout ensemble
+    judge_tracking <- judge_participation %>%
+      left_join(segments_conservation, by = c("SourceFile", "CJ")) %>%
+      rename(
+        NbSegmentsTotal = NbSegmentsTotal,
+        NbSegmentsConserve = NbSegmentsConserve
+      )
     
     return(judge_tracking)
     
@@ -1044,6 +1110,7 @@ create_judge_tracking_table <- function(all_judge_info, all_raw_data) {
     ))
   })
 }
+
 
 # ===== FONCTION GESTION DES TESTS DE PROXIMITÉ =====
 handle_proximity_test <- function(segment) {
@@ -1071,15 +1138,33 @@ handle_proximity_test <- function(segment) {
   )
 }
 
-# ===== FONCTION DE TRAITEMENT DES SEGMENTS TRIANGULAIRES (MODIFIÉE) =====
+# ===== FONCTION CORRIGÉE POUR LES SEGMENTS TRIANGULAIRES =====
 process_triangular_segments <- function(segments, file_path, file_test_type) {
-  # Correction : utiliser des valeurs logiques pour which()
-  triangular_indices <- which(sapply(segments, function(seg) {
-    if(length(seg) == 0 || nrow(seg) == 0) return(FALSE)
+  # Vérification robuste avec gestion des erreurs
+  triangular_indices <- c()
+  
+  for(i in seq_along(segments)) {
+    seg <- segments[[i]]
+    
+    # Vérifications de sécurité
+    if(is.null(seg) || length(seg) == 0 || nrow(seg) == 0) {
+      next
+    }
+    
+    if(!"NomFonction" %in% names(seg)) {
+      next
+    }
+    
     nom_fonction <- seg$NomFonction[1]
-    if(is.na(nom_fonction)) return(FALSE)
-    return(str_detect(nom_fonction, "Triangulaire|triangle"))
-  }))
+    if(is.na(nom_fonction) || is.null(nom_fonction)) {
+      next
+    }
+    
+    # Test de détection triangulaire
+    if(str_detect(nom_fonction, "Triangulaire|triangle")) {
+      triangular_indices <- c(triangular_indices, i)
+    }
+  }
   
   if(length(triangular_indices) == 0) {
     return(NULL)
@@ -1115,6 +1200,8 @@ process_triangular_segments <- function(segments, file_path, file_test_type) {
   
   return(result)
 }
+
+
 
 
 # ===== FONCTION D'ANALYSE ITÉRATIVE DES JUGES (SUITE) =====
@@ -1378,6 +1465,56 @@ data_issues_log <- list()
 files_processed <- 0
 files_skipped <- 0
 files_new <- 0
+# ===== FONCTION DE DÉTERMINATION DU TYPE DE TEST (CORRIGÉE) =====
+determine_test_type <- function(segments) {
+  # Vérifier s'il y a des tests triangulaires
+  triangular_count <- 0
+  for(seg in segments) {
+    if(!is.null(seg) && nrow(seg) > 0 && "NomFonction" %in% names(seg)) {
+      nom_fonction <- seg$NomFonction[1]
+      if(!is.na(nom_fonction) && str_detect(nom_fonction, "Triangulaire|triangle")) {
+        triangular_count <- triangular_count + 1
+      }
+    }
+  }
+  
+  if(triangular_count > 0) {
+    return("Triangular")
+  }
+  
+  # Vérifier s'il y a des tests de proximité
+  proximity_count <- 0
+  for(seg in segments) {
+    if(!is.null(seg) && nrow(seg) > 0 && "AttributeName" %in% names(seg)) {
+      attr_name <- seg$AttributeName[1]
+      if(!is.na(attr_name) && str_detect(str_to_lower(attr_name), "prox")) {
+        proximity_count <- proximity_count + 1
+      }
+    }
+  }
+  
+  if(proximity_count > 0) {
+    return("Proximity")
+  }
+  
+  # Vérifier s'il y a des tests MO (odeur corporelle)
+  mo_count <- 0
+  for(seg in segments) {
+    if(!is.null(seg) && nrow(seg) > 0 && "AttributeName" %in% names(seg)) {
+      attr_name <- seg$AttributeName[1]
+      if(!is.na(attr_name) && str_detect(str_to_lower(attr_name), "odeur corporell")) {
+        mo_count <- mo_count + 1
+      }
+    }
+  }
+  
+  if(mo_count > 0) {
+    return("Strength with Malodour")
+  }
+  
+  # Par défaut, test de force (Strength)
+  return("Strength")
+}
 
 # ===== BOUCLE PRINCIPALE COMPLÈTE MODIFIÉE =====
 for (file_path in excel_files) {
@@ -1556,12 +1693,21 @@ for (file_path in excel_files) {
   # Consolidation des segments traités
   final_data <- bind_rows(segments_processed)
   
+  # ===== CORRECTION DANS LA BOUCLE PRINCIPALE =====
   # Analyse différentielle des produits avec le type de test du fichier
   triangular_results <- process_triangular_segments(segments_processed, file_path, file_test_type)
   
-  non_triangular_segments <- segments_processed[!sapply(segments_processed, function(seg) {
-    file_test_type == "Triangular"
-  })]
+  # Correction : filtrer correctement les segments non-triangulaires
+  non_triangular_segments <- list()
+  for(i in seq_along(segments_processed)) {
+    seg <- segments_processed[[i]]
+    if(!is.null(seg) && nrow(seg) > 0) {
+      # Si ce n'est pas un test triangulaire au niveau du fichier, inclure le segment
+      if(file_test_type != "Triangular") {
+        non_triangular_segments[[length(non_triangular_segments) + 1]] <- seg
+      }
+    }
+  }
   
   standard_results <- map2(non_triangular_segments, seq_along(non_triangular_segments), 
                            ~analyze_products(.x, .y, file_path, file_test_type)) %>%
@@ -1573,6 +1719,7 @@ for (file_path in excel_files) {
     triangular_results,
     standard_results
   )
+  
   
   if (nrow(file_results) > 0) {
     all_results[[basename(file_path)]] <- file_results
@@ -1588,25 +1735,30 @@ for (file_path in excel_files) {
     judge_tracking_table <- tibble()
   }
   
-  # ===== SAUVEGARDE DANS LES BASES DE DONNÉES =====
+  # ===== SAUVEGARDE DANS LES BASES DE DONNÉES (ORDRE CORRIGÉ) =====
   
-  # 1. Sauvegarder les données brutes avec SOURCE_NAME
-  if(save_raw_data_to_db(file_data, source_name)) {
-    message("✅ Données brutes sauvegardées dans SA_RAW_DATA")
-  }
-  
-  # 2. Sauvegarder les résultats avec le type de test du fichier
+  # 1. Sauvegarder les résultats avec le type de test du fichier
   if(exists("file_results") && nrow(file_results) > 0) {
     if(save_results_to_db(file_results, source_name, file_test_type)) {
       message("✅ Résultats sauvegardés dans SA_RESULTS_DATA (", file_test_type, ")")
     }
   }
   
-  # 3. Sauvegarder le tracking des juges
+  # 2. Sauvegarder le tracking des juges
   if(exists("judge_tracking_table") && nrow(judge_tracking_table) > 0) {
     if(save_judges_to_db(judge_tracking_table, source_name)) {
       message("✅ Tracking juges sauvegardé dans SA_JUDGES")
     }
+  }
+  
+  # 3. Préparer les informations des juges retirés pour ce fichier
+  file_judge_changes_for_db <- judge_removal_info %>% 
+    keep(~ .x$File == basename(file_path)) %>%
+    map_df(~ .x)
+  
+  # 4. Sauvegarder les données brutes AVEC le statut des juges (APRÈS traitement)
+  if(save_raw_data_with_judge_status(file_data, source_name, file_judge_changes_for_db)) {
+    message("✅ Données brutes sauvegardées dans SA_RAW_DATA avec statut juges")
   }
   
   # 5. Créer les enregistrements complets pour l'application Shiny
@@ -1617,6 +1769,7 @@ for (file_path in excel_files) {
   if(save_test_info_complete(file_data, source_name)) {
     message("✅ Test_Info complet créé avec champs vides")
   }
+  
   
   # Mise à jour du tracking
   tracking_data <- update_tracking(file_path, "SUCCES", nrow(file_data), tracking_data)
@@ -1944,11 +2097,20 @@ if(length(data_issues_log) > 0) {
 }
 
 # Statistiques des bases de données
+# ===== RÉSUMÉ FINAL MODIFIÉ =====
+# Dans la section finale, remplacer :
 message("\n📊 SAUVEGARDE DANS LES BASES DE DONNÉES:")
 message("   • SA_RAW_DATA: Données brutes sauvegardées")
-message("   • SA_RESULTS_DATA: Résultats d'analyse sauvegardés") 
+message("   • SA_RESULTS_DATA: Résultats d'analyse sauvegardés dans tables spécialisées:")
+message("     - strengthandmo_results: Tests Strength et Strength with Malodour")
+message("     - proximity_results: Tests de proximité") 
+message("     - triangulaire_results: Tests triangulaires")
 message("   • SA_JUDGES: Tracking des juges sauvegardé")
-message("   • SA_METADATA: Couples métadonnées sauvegardés")
+message("   • SA_METADATA: Métadonnées sauvegardées:")
+message("     - product_info: Informations produits")
+message("     - test_info: Informations tests")
+message("     - databrute: Couples métadonnées")
+
 
 message("\n📄 FICHIERS GÉNÉRÉS:")
 message("   • Fichiers individuels: ", files_processed, " fichiers ANALYSE_*.xlsx")
