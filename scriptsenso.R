@@ -380,35 +380,38 @@ create_judges_table <- function(con) {
     if(!dbExistsTable(con, "judge_tracking")) {
       dbExecute(con, "CREATE TABLE IF NOT EXISTS judge_tracking (
         id SERIAL PRIMARY KEY,
-        source_name VARCHAR(255) NOT NULL,
-        cj VARCHAR(100) NOT NULL,
-        nb_evaluations INTEGER,
-        moyenne_score NUMERIC,
-        attributes_evalues INTEGER,
-        produits_evalues INTEGER,
-        nb_segments_total INTEGER,
-        nb_segments_conserve INTEGER,
-        taux_conservation NUMERIC,
+        cj VARCHAR(100),                          -- ✅ Pas de NOT NULL
+        nb_fichiers_participes INTEGER,           -- ✅ NOUVEAU
+        nb_evaluations_total INTEGER,             -- ✅ Total au lieu de par fichier
+        moyenne_score_globale NUMERIC,            -- ✅ Moyenne globale
+        attributes_evalues_total INTEGER,         -- ✅ Total
+        produits_evalues_total INTEGER,           -- ✅ Total
+        nb_segments_total INTEGER,                -- ✅ Total global
+        nb_segments_retire_total INTEGER,         -- ✅ Total retraits
+        nb_segments_conserve INTEGER,             -- ✅ Total conservés
+        taux_conservation_global NUMERIC,         -- ✅ Taux global
+        nb_fichiers_avec_retrait INTEGER,         -- ✅ NOUVEAU
+        premier_fichier VARCHAR(255),             -- ✅ Référence
+        dernier_fichier VARCHAR(255),             -- ✅ Référence
         date_analyse DATE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )")
       
-      # Créer les index séparément
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_source ON judge_tracking(source_name)")
+      # ✅ INDEX OPTIMISÉS
       dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_cj ON judge_tracking(cj)")
-      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_taux ON judge_tracking(taux_conservation)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_taux_global ON judge_tracking(taux_conservation_global)")
+      dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_judges_nb_fichiers ON judge_tracking(nb_fichiers_participes)")
       
-      message("Table judge_tracking créée avec succès")
+      message("Table judge_tracking OPTIMISÉE créée avec succès")
     }
-    
     return(TRUE)
-    
   }, error = function(e) {
     message("Erreur création table judge_tracking : ", e$message)
     return(FALSE)
   })
 }
+
 
 
 
@@ -681,38 +684,62 @@ save_results_to_db <- function(results_data, source_name, test_type) {
 }
 
 
-save_judges_to_db <- function(judge_data, source_name) {
+save_judges_to_db <- function(judge_data, source_name = "GLOBAL") {
   con <- create_db_connection(DATABASES$JUDGES)
   if(is.null(con)) return(FALSE)
   
   tryCatch({
     create_judges_table(con)
     
-    # Préparer les données des juges SANS judge_status
+    if(nrow(judge_data) == 0) {
+      message("Aucune donnée de juge à sauvegarder")
+      safe_disconnect(con)
+      return(TRUE)
+    }
+    
+    if(!"CJ" %in% names(judge_data)) {
+      message("Colonne CJ manquante dans les données de juges")
+      safe_disconnect(con)
+      return(FALSE)
+    }
+    
+    # ✅ PRÉPARATION DONNÉES OPTIMISÉES
     judges_db <- judge_data %>%
+      filter(!is.na(CJ) & CJ != "" & !is.null(CJ)) %>%
       mutate(
-        source_name = source_name,
-        cj = CJ,
-        nb_evaluations = ifelse("NbEvaluations" %in% names(.), NbEvaluations, NA),
-        moyenne_score = ifelse("MoyenneScore" %in% names(.), MoyenneScore, NA),
-        attributes_evalues = ifelse("AttributesEvalues" %in% names(.), AttributesEvalues, NA),
-        produits_evalues = ifelse("ProduitsEvalues" %in% names(.), ProduitsEvalues, NA),
-        nb_segments_total = ifelse("NbSegmentsTotal" %in% names(.), NbSegmentsTotal, NA),
-        nb_segments_conserve = ifelse("NbSegmentsConserve" %in% names(.), NbSegmentsConserve, NA),
-        taux_conservation = ifelse("TauxConservation" %in% names(.), TauxConservation, NA),
+        cj = as.character(CJ),
+        nb_fichiers_participes = ifelse("nb_fichiers_participes" %in% names(.), nb_fichiers_participes, 1),
+        nb_evaluations_total = ifelse("nb_evaluations_total" %in% names(.), nb_evaluations_total, NA),
+        moyenne_score_globale = ifelse("moyenne_score_globale" %in% names(.), moyenne_score_globale, NA),
+        attributes_evalues_total = ifelse("attributes_evalues_total" %in% names(.), attributes_evalues_total, NA),
+        produits_evalues_total = ifelse("produits_evalues_total" %in% names(.), produits_evalues_total, NA),
+        nb_segments_total = ifelse("nb_segments_total" %in% names(.), nb_segments_total, NA),
+        nb_segments_retire_total = ifelse("nb_segments_retire_total" %in% names(.), nb_segments_retire_total, 0),
+        nb_segments_conserve = ifelse("nb_segments_conserve" %in% names(.), nb_segments_conserve, NA),
+        taux_conservation_global = ifelse("taux_conservation_global" %in% names(.), taux_conservation_global, NA),
+        nb_fichiers_avec_retrait = ifelse("nb_fichiers_avec_retrait" %in% names(.), nb_fichiers_avec_retrait, 0),
+        premier_fichier = ifelse("premier_fichier" %in% names(.), premier_fichier, ""),
+        dernier_fichier = ifelse("dernier_fichier" %in% names(.), dernier_fichier, ""),
         date_analyse = Sys.Date()
       ) %>%
-      select(source_name, cj, nb_evaluations, moyenne_score, attributes_evalues,
-             produits_evalues, nb_segments_total, nb_segments_conserve, taux_conservation,
-             date_analyse)
+      filter(!is.na(cj) & cj != "") %>%
+      select(cj, nb_fichiers_participes, nb_evaluations_total, moyenne_score_globale,
+             attributes_evalues_total, produits_evalues_total, nb_segments_total,
+             nb_segments_retire_total, nb_segments_conserve, taux_conservation_global,
+             nb_fichiers_avec_retrait, premier_fichier, dernier_fichier, date_analyse)
     
-    # Supprimer les données existantes pour ce fichier
-    dbExecute(con, "DELETE FROM judge_tracking WHERE source_name = $1", params = list(source_name))
+    if(nrow(judges_db) == 0) {
+      message("Aucune donnée de juge valide après nettoyage")
+      safe_disconnect(con)
+      return(TRUE)
+    }
     
-    # Insérer les nouvelles données
+    # ✅ SUPPRESSION/INSERTION GLOBALE (pas par source_name)
+    dbExecute(con, "DELETE FROM judge_tracking")  # ✅ Vider complètement
+    
     dbWriteTable(con, "judge_tracking", judges_db, append = TRUE, row.names = FALSE)
     
-    message("Tracking juges sauvegardé pour : ", source_name, " (", nrow(judges_db), " lignes)")
+    message("✅ Tracking juges OPTIMISÉ sauvegardé : ", nrow(judges_db), " juges uniques (au lieu de millions)")
     safe_disconnect(con)
     return(TRUE)
     
@@ -722,6 +749,8 @@ save_judges_to_db <- function(judge_data, source_name) {
     return(FALSE)
   })
 }
+
+
 
 
 # ===== CRÉATION DES 2 TABLES POUR L'APPLICATION SHINY =====
@@ -898,15 +927,43 @@ save_test_info_complete <- function(raw_data, source_name) {
 
 
 # ===== INITIALISATION =====
+# ===== INITIALISATION =====
 message("Début analyse avec intégration multi-databases: ", Sys.time())
 
-raw_data_dir <- "//emea/dfs/Fizzdata/CRP/Fizz_Manon/SHAMPOO/2025/HENKEL"
+# ✅ DOSSIERS SPÉCIFIQUES À TRAITER
+target_dirs <- c(
+  "//emea/dfs/Fizzdata/CRP/Fizz_Manon",
+  "//emea/dfs/Fizzdata/CRP/Fizz_Cecile",
+  "//emea/dfs/Fizzdata/CRP/Fizz_Alizee"
+)
+
 output_base_dir <- "C:/ResultatsAnalyseSenso"
 
 if(!dir.exists(output_base_dir)) {
   dir.create(output_base_dir, recursive = TRUE, showWarnings = FALSE)
   message("Création du dossier de sortie principal: ", output_base_dir)
 }
+
+# ✅ VÉRIFICATION DE L'EXISTENCE DES DOSSIERS CIBLES
+existing_dirs <- target_dirs[dir.exists(target_dirs)]
+missing_dirs <- target_dirs[!dir.exists(target_dirs)]
+
+if(length(missing_dirs) > 0) {
+  message("⚠️ Dossiers manquants :")
+  for(dir in missing_dirs) {
+    message("   - ", dir)
+  }
+}
+
+if(length(existing_dirs) == 0) {
+  stop("❌ ERREUR : Aucun des dossiers cibles n'existe !")
+}
+
+message("✅ Dossiers cibles trouvés :")
+for(dir in existing_dirs) {
+  message("   - ", dir)
+}
+
 
 # ===== SYSTÈME DE TRACKING =====
 tracking_file <- file.path(output_base_dir, "TRACKING_FICHIERS.xlsx")
@@ -1035,108 +1092,222 @@ create_judge_tracking_table <- function(all_judge_info, all_raw_data) {
   tryCatch({
     if(nrow(all_raw_data) == 0) {
       message("Aucune donnée brute disponible pour le tracking des juges")
-      return(tibble(
-        Message = "Aucune donnée disponible",
-        Timestamp = Sys.time()
-      ))
+      return(tibble(Message = "Aucune donnée disponible", Timestamp = Sys.time()))
     }
     
-    # Calcul des statistiques de base par juge
-    judge_participation <- all_raw_data %>%
-      group_by(SourceFile, CJ) %>%
+    # CORRECTION : Filtrer les valeurs CJ NULL/vides dès le début
+    all_raw_data_clean <- all_raw_data %>%
+      filter(!is.na(CJ) & CJ != "" & !is.null(CJ))
+    
+    if(nrow(all_raw_data_clean) == 0) {
+      message("Aucune donnée avec CJ valide pour le tracking des juges")
+      return(tibble(Message = "Aucun juge valide trouvé", Timestamp = Sys.time()))
+    }
+    
+    # ✅ AGRÉGATION GLOBALE PAR JUGE (au lieu de par fichier)
+    judge_participation <- all_raw_data_clean %>%
+      group_by(CJ) %>%  # ✅ SUPPRESSION de SourceFile = ÉNORME RÉDUCTION
       summarise(
-        NbEvaluations = n(),
-        MoyenneScore = mean(Value, na.rm = TRUE),
-        AttributesEvalues = n_distinct(AttributeName, na.rm = TRUE),
-        ProduitsEvalues = n_distinct(ProductName, na.rm = TRUE),
+        nb_fichiers_participes = n_distinct(SourceFile),  # ✅ Nouveau : nombre de fichiers
+        nb_evaluations_total = n(),                       # ✅ Total évaluations
+        moyenne_score_globale = round(mean(Value, na.rm = TRUE), 3),
+        attributes_evalues_total = n_distinct(AttributeName, na.rm = TRUE),
+        produits_evalues_total = n_distinct(ProductName, na.rm = TRUE),
+        premier_fichier = min(SourceFile, na.rm = TRUE),  # ✅ Référence
+        dernier_fichier = max(SourceFile, na.rm = TRUE),  # ✅ Référence
         .groups = 'drop'
       ) %>%
-      mutate(DateAnalyse = Sys.Date())
+      filter(!is.na(CJ) & CJ != "") %>%
+      mutate(date_analyse = Sys.Date())
     
-    # Calculer le nombre total de segments par fichier/juge
-    segments_per_judge <- all_raw_data %>%
-      group_by(SourceFile, CJ) %>%
+    # ✅ CALCUL GLOBAL DES SEGMENTS
+    segments_per_judge <- all_raw_data_clean %>%
+      group_by(CJ) %>%  # ✅ SUPPRESSION de SourceFile
       summarise(
-        NbSegmentsTotal = n_distinct(paste(AttributeName, NomFonction, sep = " - ")),
+        nb_segments_total = n_distinct(paste(SourceFile, AttributeName, NomFonction, sep = " | ")),
         .groups = 'drop'
-      )
+      ) %>%
+      filter(!is.na(CJ) & CJ != "")
     
-    # Calculer le nombre de segments où le juge a été conservé
+    # ✅ CALCUL GLOBAL DES RETRAITS
     if(nrow(all_judge_info) > 0 && "RemovedJudges" %in% names(all_judge_info)) {
-      # Créer une table des juges retirés par segment
-      judge_removal_by_segment <- all_judge_info %>%
+      judge_removal_global <- all_judge_info %>%
         separate_rows(RemovedJudges, sep = ", ") %>%
         filter(RemovedJudges != "" & !is.na(RemovedJudges)) %>%
-        select(File, Segment, RemovedJudges) %>%
-        rename(SourceFile = File, CJ = RemovedJudges) %>%
-        group_by(SourceFile, CJ) %>%
-        summarise(NbSegmentsRetire = n(), .groups = 'drop')
-      
-      # Joindre avec les segments totaux
-      segments_conservation <- segments_per_judge %>%
-        left_join(judge_removal_by_segment, by = c("SourceFile", "CJ")) %>%
-        mutate(
-          NbSegmentsRetire = coalesce(NbSegmentsRetire, 0),
-          NbSegmentsConserve = NbSegmentsTotal - NbSegmentsRetire,
-          TauxConservation = round(NbSegmentsConserve / NbSegmentsTotal, 3)
+        rename(CJ = RemovedJudges) %>%
+        filter(!is.na(CJ) & CJ != "") %>%
+        group_by(CJ) %>%  # ✅ AGRÉGATION GLOBALE
+        summarise(
+          nb_segments_retire_total = n(),
+          nb_fichiers_avec_retrait = n_distinct(File),
+          .groups = 'drop'
         )
       
+      segments_conservation <- segments_per_judge %>%
+        left_join(judge_removal_global, by = "CJ") %>%
+        mutate(
+          nb_segments_retire_total = coalesce(nb_segments_retire_total, 0),
+          nb_segments_conserve = nb_segments_total - nb_segments_retire_total,
+          taux_conservation_global = round(nb_segments_conserve / nb_segments_total, 3)
+        )
     } else {
-      # Aucun juge retiré
       segments_conservation <- segments_per_judge %>%
         mutate(
-          NbSegmentsRetire = 0,
-          NbSegmentsConserve = NbSegmentsTotal,
-          TauxConservation = 1.000
+          nb_segments_retire_total = 0,
+          nb_segments_conserve = nb_segments_total,
+          taux_conservation_global = 1.000
         )
     }
     
-    # Joindre tout ensemble
+    # ✅ JOINTURE FINALE (UNE LIGNE PAR JUGE AU LIEU DE MILLIERS)
     judge_tracking <- judge_participation %>%
-      left_join(segments_conservation, by = c("SourceFile", "CJ")) %>%
-      rename(
-        NbSegmentsTotal = NbSegmentsTotal,
-        NbSegmentsConserve = NbSegmentsConserve
-      )
+      left_join(segments_conservation, by = "CJ") %>%
+      filter(!is.na(CJ) & CJ != "")
     
+    if(nrow(judge_tracking) == 0) {
+      message("Aucune donnée de tracking valide après nettoyage")
+      return(tibble(Message = "Aucune donnée de tracking valide", Timestamp = Sys.time()))
+    }
+    
+    message("✅ Table de tracking OPTIMISÉE créée avec ", nrow(judge_tracking), " juges (au lieu de millions de lignes)")
     return(judge_tracking)
     
   }, error = function(e) {
     message("Erreur création table tracking juges: ", e$message)
-    return(tibble(
-      Erreur = paste("Échec création table tracking:", e$message),
-      Details = "Vérifiez les colonnes dans vos données",
-      Timestamp = Sys.time()
-    ))
+    return(tibble(Erreur = paste("Échec création table tracking:", e$message), Timestamp = Sys.time()))
   })
 }
 
 
+
+
 # ===== FONCTION GESTION DES TESTS DE PROXIMITÉ =====
 handle_proximity_test <- function(segment) {
-  bench_product <- segment %>%
-    group_by(ProductName) %>%
-    summarise(avg = mean(Value, na.rm = TRUE), .groups = 'drop') %>%
-    slice_min(avg, n = 1) %>%
-    pull(ProductName)
-  
-  filtered_judges <- segment %>%
-    group_by(CJ) %>%
-    mutate(bench_score = Value[ProductName %in% bench_product]) %>%
-    filter(
-      max(Value[ProductName %in% bench_product], na.rm = TRUE) > 4 |
-        any(Value[!ProductName %in% bench_product] <= (bench_score - 1))
-    ) %>%
-    distinct(CJ) %>%
-    pull(CJ)
-  
-  list(
-    segment = segment %>% filter(!CJ %in% filtered_judges),
-    removed_judges = filtered_judges,
-    n_initial = n_distinct(segment$CJ),
-    n_final = n_distinct(segment$CJ) - length(filtered_judges)
-  )
+  tryCatch({
+    # Vérification initiale des données
+    if(is.null(segment) || nrow(segment) == 0) {
+      message("Segment vide pour test proximité")
+      return(list(
+        segment = segment,
+        removed_judges = character(0),
+        n_initial = 0,
+        n_final = 0
+      ))
+    }
+    
+    # Validation des colonnes nécessaires
+    if(!"ProductName" %in% names(segment) || !"Value" %in% names(segment) || !"CJ" %in% names(segment)) {
+      message("Colonnes manquantes pour test proximité")
+      return(list(
+        segment = segment,
+        removed_judges = character(0),
+        n_initial = n_distinct(segment$CJ),
+        n_final = n_distinct(segment$CJ)
+      ))
+    }
+    
+    # Nettoyer les données
+    segment <- segment %>%
+      filter(!is.na(ProductName) & !is.na(Value) & !is.na(CJ) & 
+               ProductName != "" & CJ != "")
+    
+    if(nrow(segment) == 0) {
+      message("Aucune donnée valide après nettoyage pour test proximité")
+      return(list(
+        segment = segment,
+        removed_judges = character(0),
+        n_initial = 0,
+        n_final = 0
+      ))
+    }
+    
+    n_judges_initial <- n_distinct(segment$CJ)
+    
+    # Identifier le produit de référence (celui avec la moyenne la plus faible)
+    bench_product <- segment %>%
+      group_by(ProductName) %>%
+      summarise(avg = mean(Value, na.rm = TRUE), .groups = 'drop') %>%
+      filter(!is.na(avg)) %>%
+      slice_min(avg, n = 1, with_ties = FALSE) %>%
+      pull(ProductName)
+    
+    if(length(bench_product) == 0) {
+      message("Impossible de déterminer le produit de référence")
+      return(list(
+        segment = segment,
+        removed_judges = character(0),
+        n_initial = n_judges_initial,
+        n_final = n_judges_initial
+      ))
+    }
+    
+    message("Produit de référence identifié: ", bench_product)
+    
+    # Identifier les juges à filtrer avec gestion d'erreur robuste
+    filtered_judges <- segment %>%
+      group_by(CJ) %>%
+      summarise(
+        # Vérifier si le juge a évalué le produit de référence
+        has_bench_score = any(ProductName %in% bench_product),
+        # Calculer le score du produit de référence (avec valeur par défaut)
+        bench_score = ifelse(
+          any(ProductName %in% bench_product),
+          Value[ProductName %in% bench_product][1],  # Prendre la première valeur si plusieurs
+          NA
+        ),
+        # Vérifier les conditions de filtrage
+        bench_too_high = ifelse(
+          !is.na(bench_score),
+          bench_score > 4,
+          FALSE
+        ),
+        # Vérifier si d'autres produits ont des scores <= bench_score - 1
+        other_products_low = ifelse(
+          !is.na(bench_score) & any(!ProductName %in% bench_product),
+          any(Value[!ProductName %in% bench_product] <= (bench_score - 1), na.rm = TRUE),
+          FALSE
+        ),
+        .groups = 'drop'
+      ) %>%
+      # Filtrer les juges selon les critères
+      filter(
+        !has_bench_score |  # Juge n'a pas évalué le produit de référence
+          bench_too_high |    # Score de référence > 4
+          other_products_low  # Autres produits avec score <= bench_score - 1
+      ) %>%
+      pull(CJ)
+    
+    # Appliquer le filtrage
+    filtered_segment <- segment %>%
+      filter(!CJ %in% filtered_judges)
+    
+    n_judges_final <- n_distinct(filtered_segment$CJ)
+    
+    message("Juges filtrés pour proximité: ", length(filtered_judges), 
+            " | Juges restants: ", n_judges_final)
+    
+    if(length(filtered_judges) > 0) {
+      message("Juges retirés: ", paste(filtered_judges, collapse = ", "))
+    }
+    
+    return(list(
+      segment = filtered_segment,
+      removed_judges = filtered_judges,
+      n_initial = n_judges_initial,
+      n_final = n_judges_final
+    ))
+    
+  }, error = function(e) {
+    message("Erreur dans handle_proximity_test: ", e$message)
+    return(list(
+      segment = segment,
+      removed_judges = character(0),
+      n_initial = n_distinct(segment$CJ),
+      n_final = n_distinct(segment$CJ)
+    ))
+  })
 }
+
 
 # ===== FONCTION CORRIGÉE POUR LES SEGMENTS TRIANGULAIRES =====
 process_triangular_segments <- function(segments, file_path, file_test_type) {
@@ -1206,6 +1377,18 @@ process_triangular_segments <- function(segments, file_path, file_test_type) {
 
 # ===== FONCTION D'ANALYSE ITÉRATIVE DES JUGES (SUITE) =====
 analyze_judges_iterative <- function(segment) {
+  # Vérification initiale des données
+  if (is.null(segment) || nrow(segment) == 0) {
+    message("Segment vide ou NULL - Arrêt du traitement")
+    return(list(
+      segment = segment,
+      removed_judges = character(0),
+      n_initial = 0,
+      n_final = 0
+    ))
+  }
+  
+  # Traitement spécial pour les tests MO (odeur corporelle)
   if (length(segment$AttributeName) > 0 && !is.na(segment$AttributeName[1]) && 
       str_detect(str_to_lower(segment$AttributeName[1]), "odeur corporell")) {
     
@@ -1219,63 +1402,173 @@ analyze_judges_iterative <- function(segment) {
     ))
   }
   
+  # Validation des données d'entrée
+  if (!"CJ" %in% names(segment) || !"Value" %in% names(segment)) {
+    message("Colonnes CJ ou Value manquantes - Arrêt du traitement")
+    return(list(
+      segment = segment,
+      removed_judges = character(0),
+      n_initial = n_distinct(segment$CJ),
+      n_final = n_distinct(segment$CJ)
+    ))
+  }
+  
+  # Nettoyage des données CJ (éliminer les valeurs vides/NULL)
+  segment <- segment %>%
+    filter(!is.na(CJ) & CJ != "" & !is.na(Value))
+  
+  if (nrow(segment) == 0) {
+    message("Aucune donnée valide après nettoyage - Arrêt du traitement")
+    return(list(
+      segment = segment,
+      removed_judges = character(0),
+      n_initial = 0,
+      n_final = 0
+    ))
+  }
+  
   n_judges_initial <- n_distinct(segment$CJ)
   removed_judges_total <- c()
   current_data <- segment
   
+  # Protection contre les boucles infinies
+  max_iterations <- 20
+  iteration_count <- 0
+  
   repeat {
+    iteration_count <- iteration_count + 1
+    
+    # Protection contre les boucles infinies
+    if (iteration_count > max_iterations) {
+      message("Limite maximale d'itérations atteinte (", max_iterations, ") - Arrêt forcé du filtrage")
+      break
+    }
+    
     n_judges_current <- n_distinct(current_data$CJ)
+    
+    # Vérification du seuil minimal de juges
     if (n_judges_current <= 8) {
       message("Seuil minimal atteint (8 juges) - Arrêt du filtrage")
       break
     }
     
-    model <- aov(Value ~ CJ, data = current_data)
-    anova_res <- anova(model)
-    p_value <- anova_res["CJ", "Pr(>F)"]
+    # Calcul de l'ANOVA avec gestion d'erreur
+    model <- tryCatch({
+      aov(Value ~ CJ, data = current_data)
+    }, error = function(e) {
+      message("Erreur lors du calcul ANOVA: ", e$message)
+      return(NULL)
+    })
     
-    if (is.na(p_value)) {
-      message("Problème de calcul ANOVA. Arrêt de l'itération pour ce segment.")
+    if (is.null(model)) {
+      message("Impossible de calculer l'ANOVA - Arrêt du filtrage")
       break
     }
     
+    anova_res <- tryCatch({
+      anova(model)
+    }, error = function(e) {
+      message("Erreur lors de l'extraction des résultats ANOVA: ", e$message)
+      return(NULL)
+    })
+    
+    if (is.null(anova_res)) {
+      message("Impossible d'extraire les résultats ANOVA - Arrêt du filtrage")
+      break
+    }
+    
+    p_value <- anova_res["CJ", "Pr(>F)"]
+    
+    if (is.na(p_value) || is.null(p_value)) {
+      message("Problème de calcul ANOVA (p-value NA/NULL) - Arrêt de l'itération pour ce segment.")
+      break
+    }
+    
+    # Test de significativité
     if (p_value >= 0.05) {
       message("Effet juge non significatif (p=", round(p_value, 4), ") - Arrêt du filtrage")
       break
     }
     
+    # Vérification du seuil de conservation (2/3 des juges initiaux)
     if (n_judges_current <= (2/3) * n_judges_initial) {
       message("Seuil de conservation atteint (2/3 des juges initiaux) - Arrêt du filtrage")
       break
     }
     
+    # Calcul des statistiques des juges
     judge_stats <- current_data %>%
       group_by(CJ) %>%
       summarise(MeanScore = mean(Value, na.rm = TRUE), .groups = 'drop') %>%
+      filter(!is.na(MeanScore)) %>%  # Éliminer les moyennes NA
       mutate(
         OverallMean = mean(MeanScore, na.rm = TRUE),
         AbsDeviation = abs(MeanScore - OverallMean)
-      )
+      ) %>%
+      filter(!is.na(AbsDeviation))  # Éliminer les déviations NA
     
+    if (nrow(judge_stats) == 0) {
+      message("Aucune statistique de juge calculable - Arrêt du filtrage")
+      break
+    }
+    
+    # Sélection du juge à retirer (celui avec la plus grande déviation)
     judge_to_remove <- judge_stats %>%
-      slice_max(AbsDeviation, n = 1) %>%
+      slice_max(AbsDeviation, n = 1, with_ties = FALSE) %>%
       pull(CJ)
     
+    # Vérification que le juge à retirer n'est pas vide
+    if (length(judge_to_remove) == 0 || is.na(judge_to_remove) || judge_to_remove == "") {
+      message("Impossible de déterminer le juge à retirer - Arrêt du filtrage")
+      break
+    }
+    
+    # Protection contre la suppression répétée du même juge
+    if (judge_to_remove %in% removed_judges_total) {
+      message("Juge déjà retiré précédemment (", judge_to_remove, ") - Arrêt pour éviter une boucle infinie")
+      break
+    }
+    
+    # Vérification que le juge existe encore dans les données
+    if (!judge_to_remove %in% current_data$CJ) {
+      message("Juge à retirer non trouvé dans les données actuelles - Arrêt du filtrage")
+      break
+    }
+    
+    # Ajout à la liste des juges retirés
     removed_judges_total <- c(removed_judges_total, judge_to_remove)
-    current_data <- current_data %>% filter(CJ != judge_to_remove)
+    
+    # Suppression du juge des données
+    current_data <- current_data %>% 
+      filter(CJ != judge_to_remove)
+    
+    # Vérification que des données restent après suppression
+    if (nrow(current_data) == 0) {
+      message("Plus de données après suppression du juge - Arrêt du filtrage")
+      # Restaurer les données précédentes
+      current_data <- segment %>% 
+        filter(!CJ %in% removed_judges_total[-length(removed_judges_total)])
+      removed_judges_total <- removed_judges_total[-length(removed_judges_total)]
+      break
+    }
     
     message("Juge retiré: ", judge_to_remove,
-            " | Déviation: ", round(max(judge_stats$AbsDeviation), 2),
-            " | Nouveau n juges: ", n_judges_current - 1)
+            " | Déviation: ", round(max(judge_stats$AbsDeviation, na.rm = TRUE), 2),
+            " | Nouveau n juges: ", n_judges_current - 1,
+            " | Itération: ", iteration_count)
   }
+  
+  # Validation finale
+  final_n_judges <- n_distinct(current_data$CJ)
   
   return(list(
     segment = current_data,
     removed_judges = unique(removed_judges_total),
     n_initial = n_judges_initial,
-    n_final = n_distinct(current_data$CJ)
+    n_final = final_n_judges
   ))
 }
+
 
 # ===== FONCTION D'ANALYSE DES PRODUITS (MODIFIÉE POUR NOUVEAUX FORMATS) =====
 analyze_products <- function(segment, segment_index, file_path = NULL, file_test_type) {
@@ -1452,10 +1745,32 @@ verify_segments <- function(segment) {
 
 # ===== PROGRAMME PRINCIPAL MODIFIÉ =====
 tracking_data <- load_tracking_data()
-excel_files <- dir_ls(raw_data_dir, regexp = "\\.xlsx$", ignore.case = TRUE, recurse = TRUE) %>%
-  as.character()
 
-message("Fichiers Excel détectés: ", length(excel_files))
+# ✅ COLLECTER LES FICHIERS EXCEL DEPUIS LES DOSSIERS SPÉCIFIQUES
+excel_files <- c()
+for(target_dir in existing_dirs) {
+  message("🔍 Scan du dossier : ", target_dir)
+  
+  files_in_dir <- tryCatch({
+    dir_ls(target_dir, regexp = "\\.xlsx$", ignore.case = TRUE, recurse = TRUE) %>%
+      as.character()
+  }, error = function(e) {
+    message("⚠️ Erreur scan ", target_dir, " : ", e$message)
+    return(character(0))
+  })
+  
+  if(length(files_in_dir) > 0) {
+    excel_files <- c(excel_files, files_in_dir)
+    message("   → ", length(files_in_dir), " fichiers Excel trouvés")
+  } else {
+    message("   → Aucun fichier Excel trouvé")
+  }
+}
+
+message("📊 TOTAL fichiers Excel détectés: ", length(excel_files))
+message("   • Fizz_Manon : ", sum(str_detect(excel_files, "Fizz_Manon")))
+message("   • Fizz_Cecile : ", sum(str_detect(excel_files, "Fizz_Cecile")))
+
 
 all_results <- list()
 judge_removal_info <- list()
@@ -1482,13 +1797,24 @@ determine_test_type <- function(segments) {
     return("Triangular")
   }
   
-  # Vérifier s'il y a des tests de proximité
+  # Vérifier s'il y a des tests de proximité (amélioration de la détection)
   proximity_count <- 0
   for(seg in segments) {
-    if(!is.null(seg) && nrow(seg) > 0 && "AttributeName" %in% names(seg)) {
-      attr_name <- seg$AttributeName[1]
-      if(!is.na(attr_name) && str_detect(str_to_lower(attr_name), "prox")) {
-        proximity_count <- proximity_count + 1
+    if(!is.null(seg) && nrow(seg) > 0) {
+      # Vérifier dans AttributeName
+      if("AttributeName" %in% names(seg)) {
+        attr_name <- seg$AttributeName[1]
+        if(!is.na(attr_name) && str_detect(str_to_lower(attr_name), "prox")) {
+          proximity_count <- proximity_count + 1
+        }
+      }
+      
+      # Vérifier aussi dans NomFonction
+      if("NomFonction" %in% names(seg)) {
+        nom_fonction <- seg$NomFonction[1]
+        if(!is.na(nom_fonction) && str_detect(str_to_lower(nom_fonction), "prox")) {
+          proximity_count <- proximity_count + 1
+        }
       }
     }
   }
@@ -1515,6 +1841,7 @@ determine_test_type <- function(segments) {
   # Par défaut, test de force (Strength)
   return("Strength")
 }
+
 
 # ===== BOUCLE PRINCIPALE COMPLÈTE MODIFIÉE =====
 for (file_path in excel_files) {
@@ -1727,13 +2054,7 @@ for (file_path in excel_files) {
   }
   
   # Création de la table de tracking des juges pour ce fichier
-  if(length(judge_removal_info) > 0) {
-    all_judge_info_df <- bind_rows(judge_removal_info)
-    all_raw_data_df <- bind_rows(all_raw_data)
-    judge_tracking_table <- create_judge_tracking_table(all_judge_info_df, all_raw_data_df)
-  } else {
-    judge_tracking_table <- tibble()
-  }
+  
   
   # ===== SAUVEGARDE DANS LES BASES DE DONNÉES (ORDRE CORRIGÉ) =====
   
@@ -1743,13 +2064,7 @@ for (file_path in excel_files) {
       message("✅ Résultats sauvegardés dans SA_RESULTS_DATA (", file_test_type, ")")
     }
   }
-  
-  # 2. Sauvegarder le tracking des juges
-  if(exists("judge_tracking_table") && nrow(judge_tracking_table) > 0) {
-    if(save_judges_to_db(judge_tracking_table, source_name)) {
-      message("✅ Tracking juges sauvegardé dans SA_JUDGES")
-    }
-  }
+
   
   # 3. Préparer les informations des juges retirés pour ce fichier
   file_judge_changes_for_db <- judge_removal_info %>% 
@@ -1891,6 +2206,42 @@ for (file_path in excel_files) {
     })
   })
 }
+
+message("\n=== GÉNÉRATION DU TRACKING GLOBAL DES JUGES ===")
+
+if(length(judge_removal_info) > 0 && length(all_raw_data) > 0) {
+  tryCatch({
+    # Consolidation de toutes les informations
+    all_judge_info_df <- bind_rows(judge_removal_info)
+    all_raw_data_df <- bind_rows(all_raw_data)
+    
+    message("Données consolidées : ", nrow(all_raw_data_df), " lignes brutes, ", 
+            nrow(all_judge_info_df), " informations de retrait")
+    
+    # ✅ CRÉATION DE LA TABLE GLOBALE OPTIMISÉE
+    global_judge_tracking <- create_judge_tracking_table(all_judge_info_df, all_raw_data_df)
+    
+    if(nrow(global_judge_tracking) > 0) {
+      # ✅ SAUVEGARDE GLOBALE
+      if(save_judges_to_db(global_judge_tracking, "GLOBAL")) {
+        message("✅ Tracking global des juges sauvegardé dans SA_JUDGES")
+        message("   → ", nrow(global_judge_tracking), " juges uniques trackés")
+      }
+    } else {
+      message("⚠️ Aucune donnée de tracking global générée")
+    }
+    
+  }, error = function(e) {
+    message("❌ Erreur génération tracking global des juges : ", e$message)
+  })
+} else {
+  message("⚠️ Pas assez de données pour générer le tracking global des juges")
+  message("   Judge removal info : ", length(judge_removal_info), " entrées")
+  message("   Raw data : ", length(all_raw_data), " fichiers")
+}
+
+# ===== GÉNÉRATION DU FICHIER CONSOLIDÉ =====
+message("\n=== GÉNÉRATION DU FICHIER CONSOLIDÉ ===")
 
 # ===== GÉNÉRATION DU FICHIER CONSOLIDÉ GLOBAL =====
 message("\n=== GÉNÉRATION DU FICHIER CONSOLIDÉ GLOBAL ===")
