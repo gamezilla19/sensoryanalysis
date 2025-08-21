@@ -118,6 +118,8 @@ TEST_FACILITIES_CHOICES <- c(
   "Sensory booth", "Shooting star", "Sensory lab", "CLT", "Home", "Hotel room"
 )
 
+SCALE_CHOICES <- c("", "1 to 5", "0 to 10")
+
 # Liste REF (Product Info)
 REF_CHOICES <- c("", "Y", "N")
 
@@ -160,11 +162,21 @@ create_test_info_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
   tryCatch({
-    if(dbExistsTable(con, "test_info")) {  # ✅ MINUSCULES
+    if(dbExistsTable(con, "test_info")) {
       message("📋 Table test_info existe déjà")
+      
+      # ✅ VÉRIFIER ET AJOUTER LA COLONNE SCALE SI MANQUANTE
+      columns <- dbListFields(con, "test_info")
+      if(!"scale" %in% columns) {
+        message("🔧 Ajout de la colonne 'scale' à la table existante...")
+        dbExecute(con, "ALTER TABLE test_info ADD COLUMN scale VARCHAR(100)")
+        message("✅ Colonne 'scale' ajoutée avec succès")
+      }
+      
       return(TRUE)
     }
     
+    # Création complète si la table n'existe pas
     create_sql <- "
     CREATE TABLE IF NOT EXISTS test_info (
       id SERIAL PRIMARY KEY,
@@ -182,6 +194,7 @@ create_test_info_table <- function(con) {
       methodology VARCHAR(100),
       panel VARCHAR(100),
       test_facilities VARCHAR(100),
+      scale VARCHAR(100),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -200,6 +213,7 @@ create_test_info_table <- function(con) {
     return(FALSE)
   })
 }
+
 
 create_product_info_metadata_table <- function(con) {
   if(is.null(con)) return(FALSE)
@@ -448,6 +462,7 @@ save_test_info_to_postgres <- function(con, test_info_data) {
         methodology = $12,
         panel = $13,
         test_facilities = $14,
+        scale = $15,
         updated_at = CURRENT_TIMESTAMP
       WHERE source_name = $1 AND test_name = $2
       "
@@ -466,7 +481,8 @@ save_test_info_to_postgres <- function(con, test_info_data) {
         test_info_data$subsegment,
         test_info_data$methodology,
         test_info_data$panel,
-        test_info_data$test_facilities
+        test_info_data$test_facilities,
+        test_info_data$scale
       ))
       
       message("✅ Test Info mis à jour dans SA_METADATA")
@@ -572,13 +588,26 @@ detect_missing_test_info <- function(con) {
           methodology = "",
           panel = "",
           test_facilities = "",
+          scale = "",  # ✅ AJOUT EXPLICITE
           statut = "À compléter"
         )
     } else {
-      # Chercher les tests qui existent dans test_info mais avec des champs vides
+      # ✅ VÉRIFIER QUELLES COLONNES EXISTENT AVANT DE LES UTILISER
+      columns_to_check <- c("gmps_type", "gpms_code", "test_date", "master_customer_name", 
+                            "country_client", "type_of_test", "category", "subsegment", 
+                            "methodology", "panel", "test_facilities", "scale")
+      
+      # Ajouter les colonnes manquantes avec des valeurs vides
+      for(col in columns_to_check) {
+        if(!col %in% names(existing_test_info)) {
+          existing_test_info[[col]] <- ""
+          message("🔧 Colonne '", col, "' ajoutée temporairement pour la détection")
+        }
+      }
+      
+      # Maintenant on peut filtrer en toute sécurité
       missing_tests <- existing_test_info %>%
         filter(
-          # Vérifier si les champs sont vides ou contiennent seulement des espaces
           (is.null(gmps_type) | is.na(gmps_type) | gmps_type == "" | str_trim(gmps_type) == "") |
             (is.null(gpms_code) | is.na(gpms_code) | gpms_code == "" | str_trim(gpms_code) == "") |
             (is.null(test_date) | is.na(test_date) | test_date == "" | str_trim(test_date) == "") |
@@ -589,11 +618,12 @@ detect_missing_test_info <- function(con) {
             (is.null(subsegment) | is.na(subsegment) | subsegment == "" | str_trim(subsegment) == "") |
             (is.null(methodology) | is.na(methodology) | methodology == "" | str_trim(methodology) == "") |
             (is.null(panel) | is.na(panel) | panel == "" | str_trim(panel) == "") |
-            (is.null(test_facilities) | is.na(test_facilities) | test_facilities == "" | str_trim(test_facilities) == "")
+            (is.null(test_facilities) | is.na(test_facilities) | test_facilities == "" | str_trim(test_facilities) == "") | 
+            (is.null(scale) | is.na(scale) | scale == "" | str_trim(scale) == "")
         ) %>%
         select(source_name, test_name, gmps_type, gpms_code, sc_request, test_date, 
                master_customer_name, country_client, type_of_test, category, 
-               subsegment, methodology, panel, test_facilities) %>%
+               subsegment, methodology, panel, test_facilities, scale) %>%
         distinct()
       
       # Ajouter les tests de product_info qui n'existent pas du tout dans test_info
@@ -611,7 +641,8 @@ detect_missing_test_info <- function(con) {
           subsegment = "",
           methodology = "",
           panel = "",
-          test_facilities = ""
+          test_facilities = "",
+          scale = ""
         )
       
       # Combiner les deux types de tests manquants
@@ -635,6 +666,7 @@ detect_missing_test_info <- function(con) {
           methodology = ifelse(is.na(methodology) | is.null(methodology), "", as.character(methodology)),
           panel = ifelse(is.na(panel) | is.null(panel), "", as.character(panel)),
           test_facilities = ifelse(is.na(test_facilities) | is.null(test_facilities), "", as.character(test_facilities)),
+          scale = ifelse(is.na(scale) | is.null(scale), "", as.character(scale)),
           statut = "À compléter"
         )
     }
@@ -647,6 +679,7 @@ detect_missing_test_info <- function(con) {
     return(data.frame())
   })
 }
+
 
 # ===== FONCTION UNIQUE POUR DÉTECTER LES PRODUCT INFO MANQUANTS =====
 detect_missing_product_info <- function(con) {
@@ -1013,6 +1046,17 @@ ui <- dashboardPage(
               )
             ),
             
+            fluidRow(
+              column(6,
+                     selectInput("scale", "Scale", 
+                                 choices = SCALE_CHOICES,
+                                 selected = "")
+              ),
+              column(6,
+                     div()  # Colonne vide pour l'alignement
+              )
+            ),
+            
             br(),
             
             fluidRow(
@@ -1065,7 +1109,8 @@ ui <- dashboardPage(
               tags$li(strong("SUBSEGMENT:"), " Liste déroulante"),
               tags$li(strong("METHODOLOGY:"), " Liste déroulante"),
               tags$li(strong("PANEL:"), " Liste déroulante"),
-              tags$li(strong("TEST FACILITIES:"), " Liste déroulante")
+              tags$li(strong("TEST FACILITIES:"), " Liste déroulante"),
+              tags$li(strong("SCALE:"), " Liste déroulante (1 to 5 ou 0 to 10)")
             ),
             
             br(),
@@ -1638,6 +1683,7 @@ server <- function(input, output, session) {
       updateSelectInput(session, "methodology", selected = "")
       updateSelectInput(session, "panel", selected = "")
       updateSelectInput(session, "test_facilities", selected = "")
+      updateSelectInput(session, "scale", selected = "")
       
       # Basculer vers l'onglet
       updateTabItems(session, "sidebarMenu", "manual_test")
@@ -1652,10 +1698,6 @@ server <- function(input, output, session) {
       showNotification(paste("Erreur chargement:", e$message), type = "error")
     })
   })
-  
-  
-  
-  
   
   
   # ===== GESTION DU DOUBLE-CLIC POUR PRODUCT INFO (VERSION FINALE CORRIGÉE) =====
@@ -1793,6 +1835,7 @@ server <- function(input, output, session) {
       methodology = ifelse(is.null(input$methodology) || input$methodology == "", "", input$methodology),
       panel = ifelse(is.null(input$panel) || input$panel == "", "", input$panel),
       test_facilities = ifelse(is.null(input$test_facilities) || input$test_facilities == "", "", input$test_facilities),
+      scale = ifelse(is.null(input$scale) || input$scale == "", "", input$scale),
       stringsAsFactors = FALSE
     )
     
