@@ -685,7 +685,6 @@ save_results_to_db <- function(results_data, source_name, test_type) {
   })
 }
 
-
 save_judges_to_db <- function(judge_data, source_name = "GLOBAL") {
   con <- create_db_connection(DATABASES$JUDGES)
   if(is.null(con)) return(FALSE)
@@ -705,23 +704,23 @@ save_judges_to_db <- function(judge_data, source_name = "GLOBAL") {
       return(FALSE)
     }
     
-    # ✅ PRÉPARATION DONNÉES OPTIMISÉES
+    # ✅ PRÉPARATION DONNÉES AVEC VALIDATION RENFORCÉE
     judges_db <- judge_data %>%
-      filter(!is.na(CJ) & CJ != "" & !is.null(CJ)) %>%
+      filter(!is.na(CJ) & CJ != "" & !is.null(CJ) & CJ != "NULL") %>%
       mutate(
         cj = as.character(CJ),
-        nb_fichiers_participes = ifelse("nb_fichiers_participes" %in% names(.), nb_fichiers_participes, 1),
-        nb_evaluations_total = ifelse("nb_evaluations_total" %in% names(.), nb_evaluations_total, NA),
-        moyenne_score_globale = ifelse("moyenne_score_globale" %in% names(.), moyenne_score_globale, NA),
-        attributes_evalues_total = ifelse("attributes_evalues_total" %in% names(.), attributes_evalues_total, NA),
-        produits_evalues_total = ifelse("produits_evalues_total" %in% names(.), produits_evalues_total, NA),
-        nb_segments_total = ifelse("nb_segments_total" %in% names(.), nb_segments_total, NA),
-        nb_segments_retire_total = ifelse("nb_segments_retire_total" %in% names(.), nb_segments_retire_total, 0),
-        nb_segments_conserve = ifelse("nb_segments_conserve" %in% names(.), nb_segments_conserve, NA),
-        taux_conservation_global = ifelse("taux_conservation_global" %in% names(.), taux_conservation_global, NA),
-        nb_fichiers_avec_retrait = ifelse("nb_fichiers_avec_retrait" %in% names(.), nb_fichiers_avec_retrait, 0),
-        premier_fichier = ifelse("premier_fichier" %in% names(.), premier_fichier, ""),
-        dernier_fichier = ifelse("dernier_fichier" %in% names(.), dernier_fichier, ""),
+        nb_fichiers_participes = coalesce(nb_fichiers_participes, 1),
+        nb_evaluations_total = coalesce(nb_evaluations_total, 0),
+        moyenne_score_globale = coalesce(moyenne_score_globale, 0),
+        attributes_evalues_total = coalesce(attributes_evalues_total, 0),
+        produits_evalues_total = coalesce(produits_evalues_total, 0),
+        nb_segments_total = coalesce(nb_segments_total, 0),
+        nb_segments_retire_total = coalesce(nb_segments_retire_total, 0),
+        nb_segments_conserve = coalesce(nb_segments_conserve, nb_segments_total),
+        taux_conservation_global = coalesce(taux_conservation_global, 1.000),
+        nb_fichiers_avec_retrait = coalesce(nb_fichiers_avec_retrait, 0),
+        premier_fichier = coalesce(premier_fichier, ""),
+        dernier_fichier = coalesce(dernier_fichier, ""),
         date_analyse = Sys.Date()
       ) %>%
       filter(!is.na(cj) & cj != "") %>%
@@ -736,21 +735,27 @@ save_judges_to_db <- function(judge_data, source_name = "GLOBAL") {
       return(TRUE)
     }
     
-    # ✅ SUPPRESSION/INSERTION GLOBALE (pas par source_name)
-    dbExecute(con, "DELETE FROM judge_tracking")  # ✅ Vider complètement
+    # ✅ AFFICHAGE DE CONTRÔLE AVANT SAUVEGARDE
+    message("📊 Contrôle avant sauvegarde :")
+    message("   • Nombre de juges : ", nrow(judges_db))
+    message("   • Plage évaluations : ", min(judges_db$nb_evaluations_total), " - ", max(judges_db$nb_evaluations_total))
+    message("   • Plage moyennes : ", round(min(judges_db$moyenne_score_globale, na.rm = TRUE), 2), " - ", round(max(judges_db$moyenne_score_globale, na.rm = TRUE), 2))
     
+    # ✅ SUPPRESSION/INSERTION GLOBALE
+    dbExecute(con, "DELETE FROM judge_tracking")
     dbWriteTable(con, "judge_tracking", judges_db, append = TRUE, row.names = FALSE)
     
-    message("✅ Tracking juges OPTIMISÉ sauvegardé : ", nrow(judges_db), " juges uniques (au lieu de millions)")
+    message("✅ Tracking juges sauvegardé : ", nrow(judges_db), " juges uniques")
     safe_disconnect(con)
     return(TRUE)
     
   }, error = function(e) {
-    message("Erreur sauvegarde tracking juges : ", e$message)
+    message("❌ Erreur sauvegarde tracking juges : ", e$message)
     safe_disconnect(con)
     return(FALSE)
   })
 }
+
 
 
 
@@ -1099,88 +1104,114 @@ create_judge_tracking_table <- function(all_judge_info, all_raw_data) {
       return(tibble(Message = "Aucune donnée disponible", Timestamp = Sys.time()))
     }
     
-    # CORRECTION : Filtrer les valeurs CJ NULL/vides dès le début
+    # ✅ CORRECTION : Filtrer les valeurs CJ NULL/vides dès le début
     all_raw_data_clean <- all_raw_data %>%
-      filter(!is.na(CJ) & CJ != "" & !is.null(CJ))
+      filter(!is.na(CJ) & CJ != "" & !is.null(CJ) & CJ != "NULL") %>%
+      filter(!is.na(Value) & is.numeric(Value))  # ✅ AJOUT : Filtrer les valeurs non-numériques
     
     if(nrow(all_raw_data_clean) == 0) {
       message("Aucune donnée avec CJ valide pour le tracking des juges")
       return(tibble(Message = "Aucun juge valide trouvé", Timestamp = Sys.time()))
     }
     
-    # ✅ AGRÉGATION GLOBALE PAR JUGE (au lieu de par fichier)
+    message("✅ Données nettoyées : ", nrow(all_raw_data_clean), " lignes valides pour ", 
+            n_distinct(all_raw_data_clean$CJ), " juges uniques")
+    
+    # ✅ CORRECTION : AGRÉGATION GLOBALE PAR JUGE (calculs corrects)
     judge_participation <- all_raw_data_clean %>%
-      group_by(CJ) %>%  # ✅ SUPPRESSION de SourceFile = ÉNORME RÉDUCTION
+      group_by(CJ) %>%
       summarise(
-        nb_fichiers_participes = n_distinct(SourceFile),  # ✅ Nouveau : nombre de fichiers
-        nb_evaluations_total = n(),                       # ✅ Total évaluations
-        moyenne_score_globale = round(mean(Value, na.rm = TRUE), 3),
+        nb_fichiers_participes = n_distinct(SourceFile, na.rm = TRUE),
+        nb_evaluations_total = n(),  # ✅ Total réel par juge
+        moyenne_score_globale = round(mean(Value, na.rm = TRUE), 3),  # ✅ Moyenne réelle par juge
         attributes_evalues_total = n_distinct(AttributeName, na.rm = TRUE),
         produits_evalues_total = n_distinct(ProductName, na.rm = TRUE),
-        premier_fichier = min(SourceFile, na.rm = TRUE),  # ✅ Référence
-        dernier_fichier = max(SourceFile, na.rm = TRUE),  # ✅ Référence
+        premier_fichier = min(SourceFile, na.rm = TRUE),
+        dernier_fichier = max(SourceFile, na.rm = TRUE),
         .groups = 'drop'
       ) %>%
       filter(!is.na(CJ) & CJ != "") %>%
       mutate(date_analyse = Sys.Date())
     
-    # ✅ CALCUL GLOBAL DES SEGMENTS
+    # ✅ CORRECTION : CALCUL CORRECT DES SEGMENTS PAR JUGE
     segments_per_judge <- all_raw_data_clean %>%
-      group_by(CJ) %>%  # ✅ SUPPRESSION de SourceFile
+      group_by(CJ) %>%
       summarise(
-        nb_segments_total = n_distinct(paste(SourceFile, AttributeName, NomFonction, sep = " | ")),
+        nb_segments_total = n_distinct(paste(SourceFile, AttributeName, NomFonction, sep = "_SEPARATOR_"), na.rm = TRUE),
         .groups = 'drop'
       ) %>%
       filter(!is.na(CJ) & CJ != "")
     
-    # ✅ CALCUL GLOBAL DES RETRAITS
+    # ✅ CORRECTION : CALCUL CORRECT DES RETRAITS
     if(nrow(all_judge_info) > 0 && "RemovedJudges" %in% names(all_judge_info)) {
+      # Traitement plus robuste des juges retirés
       judge_removal_global <- all_judge_info %>%
+        filter(!is.na(RemovedJudges) & RemovedJudges != "") %>%
         separate_rows(RemovedJudges, sep = ", ") %>%
         filter(RemovedJudges != "" & !is.na(RemovedJudges)) %>%
         rename(CJ = RemovedJudges) %>%
         filter(!is.na(CJ) & CJ != "") %>%
-        group_by(CJ) %>%  # ✅ AGRÉGATION GLOBALE
+        group_by(CJ) %>%
         summarise(
           nb_segments_retire_total = n(),
-          nb_fichiers_avec_retrait = n_distinct(File),
+          nb_fichiers_avec_retrait = n_distinct(File, na.rm = TRUE),
           .groups = 'drop'
         )
       
+      # ✅ JOINTURE ET CALCULS CORRECTS
       segments_conservation <- segments_per_judge %>%
         left_join(judge_removal_global, by = "CJ") %>%
         mutate(
           nb_segments_retire_total = coalesce(nb_segments_retire_total, 0),
-          nb_segments_conserve = nb_segments_total - nb_segments_retire_total,
-          taux_conservation_global = round(nb_segments_conserve / nb_segments_total, 3)
+          nb_segments_conserve = pmax(0, nb_segments_total - nb_segments_retire_total),  # ✅ Éviter les valeurs négatives
+          taux_conservation_global = round(
+            ifelse(nb_segments_total > 0, nb_segments_conserve / nb_segments_total, 1), 
+            3
+          ),
+          nb_fichiers_avec_retrait = coalesce(nb_fichiers_avec_retrait, 0)
         )
     } else {
       segments_conservation <- segments_per_judge %>%
         mutate(
           nb_segments_retire_total = 0,
           nb_segments_conserve = nb_segments_total,
-          taux_conservation_global = 1.000
+          taux_conservation_global = 1.000,
+          nb_fichiers_avec_retrait = 0
         )
     }
     
-    # ✅ JOINTURE FINALE (UNE LIGNE PAR JUGE AU LIEU DE MILLIERS)
+    # ✅ JOINTURE FINALE AVEC VÉRIFICATIONS
     judge_tracking <- judge_participation %>%
       left_join(segments_conservation, by = "CJ") %>%
-      filter(!is.na(CJ) & CJ != "")
+      filter(!is.na(CJ) & CJ != "") %>%
+      mutate(
+        # ✅ Vérifications de cohérence
+        nb_segments_total = coalesce(nb_segments_total, 0),
+        nb_segments_retire_total = coalesce(nb_segments_retire_total, 0),
+        nb_segments_conserve = coalesce(nb_segments_conserve, nb_segments_total),
+        taux_conservation_global = coalesce(taux_conservation_global, 1.000),
+        nb_fichiers_avec_retrait = coalesce(nb_fichiers_avec_retrait, 0)
+      )
     
     if(nrow(judge_tracking) == 0) {
       message("Aucune donnée de tracking valide après nettoyage")
       return(tibble(Message = "Aucune donnée de tracking valide", Timestamp = Sys.time()))
     }
     
-    message("✅ Table de tracking OPTIMISÉE créée avec ", nrow(judge_tracking), " juges (au lieu de millions de lignes)")
+    # ✅ AFFICHAGE DE STATISTIQUES DE CONTRÔLE
+    message("✅ Table de tracking créée avec ", nrow(judge_tracking), " juges uniques")
+    message("   • Moyenne des évaluations par juge : ", round(mean(judge_tracking$nb_evaluations_total), 1))
+    message("   • Moyenne des scores : ", round(mean(judge_tracking$moyenne_score_globale, na.rm = TRUE), 2))
+    message("   • Taux de conservation moyen : ", round(mean(judge_tracking$taux_conservation_global, na.rm = TRUE), 3))
+    
     return(judge_tracking)
     
   }, error = function(e) {
-    message("Erreur création table tracking juges: ", e$message)
+    message("❌ Erreur création table tracking juges: ", e$message)
     return(tibble(Erreur = paste("Échec création table tracking:", e$message), Timestamp = Sys.time()))
   })
 }
+
 
 
 
