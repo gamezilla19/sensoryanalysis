@@ -1518,7 +1518,10 @@ server <- function(input, output, session) {
           options = list(
             pageLength = 10,
             scrollX = TRUE,
-            selection = 'single'
+            selection = 'single',
+            stateSave = TRUE,  # ✅ AJOUT : Sauvegarder l'état
+            info = TRUE,       # ✅ AJOUT : Afficher les infos de pagination
+            lengthChange = TRUE # ✅ AJOUT : Permettre de changer la taille des pages
           ),
           rownames = FALSE
         )
@@ -1542,84 +1545,207 @@ server <- function(input, output, session) {
           options = list(
             pageLength = 10,
             scrollX = TRUE,
-            selection = 'single'
+            selection = 'single',
+            stateSave = TRUE,  # ✅ AJOUT : Sauvegarder l'état
+            info = TRUE,       # ✅ AJOUT : Afficher les infos de pagination
+            lengthChange = TRUE # ✅ AJOUT : Permettre de changer la taille des pages
           ),
           rownames = FALSE
         )
     }
   })
   
-  # ===== GESTION DU DOUBLE-CLIC POUR TEST INFO RACCORDÉ =====
+  
+  # ===== GESTION DU DOUBLE-CLIC POUR TEST INFO (VERSION FINALE CORRIGÉE) =====
   observeEvent(input$missing_test_info_table_cell_clicked, {
     click_info <- input$missing_test_info_table_cell_clicked
     
-    if(!is.null(click_info$value) && click_info$col %in% c(0, 1)) {
-      # Récupérer les données de la ligne cliquée
-      missing_data <- missing_test_info()
-      if(nrow(missing_data) > 0) {
-        row_index <- click_info$row + 1
-        if(row_index <= nrow(missing_data)) {
-          selected_row <- missing_data[row_index, ]
-          
-          # Charger le test dans le formulaire
-          updateSelectizeInput(session, "source_name_input", selected = selected_row$source_name)
-          updateTextInput(session, "test_name_input", value = selected_row$test_name)
-          updateSelectInput(session, "gmps_type", selected = "")
-          updateTextInput(session, "gpms_code", value = "")
-          updateTextInput(session, "sc_request", value = "")
-          updateTextInput(session, "test_date", value = "")
-          updateSelectInput(session, "master_customer_name", selected = "")
-          updateSelectInput(session, "country_client", selected = "")
-          updateSelectInput(session, "type_of_test", selected = "")
-          updateSelectInput(session, "category", selected = "")
-          updateSelectInput(session, "subsegment", selected = "")
-          updateSelectInput(session, "methodology", selected = "")
-          updateSelectInput(session, "panel", selected = "")
-          updateSelectInput(session, "test_facilities", selected = "")
-          
-          # Basculer vers l'onglet de saisie
-          updateTabItems(session, "sidebarMenu", "manual_test")
-          
-          showNotification(
-            paste("Test", selected_row$test_name, "chargé pour saisie. Complétez les informations !"),
-            type = "message"
-          )
-        }
-      }
+    if(is.null(click_info) || is.null(click_info$row) || is.null(click_info$col)) {
+      message("❌ Click info invalide")
+      return()
     }
+    
+    con <- postgres_con()
+    if(is.null(con)) {
+      showNotification("Connexion SA_METADATA requise", type = "error")
+      return()
+    }
+    
+    # 🎯 UTILISER DIRECTEMENT L'INDEX DT (SANS +1)
+    dt_row_index <- click_info$row  # DT est basé sur 0, R sur 1
+    
+    message("=== CLICK TEST FINAL CORRIGÉ ===")
+    message("Index DT (basé sur 0): ", click_info$row)
+    message("Index pour R (basé sur 1): ", dt_row_index)
+    
+    # Récupérer les données complètes
+    missing_data <- missing_test_info()
+    
+    if(nrow(missing_data) == 0) {
+      showNotification("Aucune donnée disponible", type = "error")
+      return()
+    }
+    
+    # Reproduire exactement le filtrage de DT
+    dt_displayed_data <- missing_data %>%
+      select(source_name, test_name, statut)
+    
+    message("Nombre total de lignes dans DT: ", nrow(dt_displayed_data))
+    
+    # 🎯 VÉRIFICATION DES LIMITES
+    if(dt_row_index < 1 || dt_row_index > nrow(dt_displayed_data)) {
+      showNotification(paste("Index invalide:", dt_row_index, "pour", nrow(dt_displayed_data), "lignes"), type = "error")
+      return()
+    }
+    
+    # 🎯 RÉCUPÉRER LA LIGNE CORRECTE
+    clicked_dt_row <- dt_displayed_data[dt_row_index, ]
+    
+    message("=== LIGNE SÉLECTIONNÉE ===")
+    message("Source name sélectionné: '", clicked_dt_row$source_name, "'")
+    message("Test name sélectionné: '", clicked_dt_row$test_name, "'")
+    
+    # Retrouver les données complètes correspondantes
+    selected_test <- missing_data %>%
+      filter(
+        source_name == clicked_dt_row$source_name & 
+          test_name == clicked_dt_row$test_name
+      ) %>%
+      slice(1)
+    
+    if(nrow(selected_test) == 0) {
+      showNotification("Test non trouvé dans les données complètes", type = "error")
+      return()
+    }
+    
+    message("✅ Test final sélectionné: '", selected_test$source_name, "'")
+    
+    tryCatch({
+      # Charger dans le formulaire
+      updateSelectizeInput(session, "source_name_input", selected = selected_test$source_name)
+      updateTextInput(session, "test_name_input", value = selected_test$source_name)
+      
+      # Vider les autres champs
+      updateSelectInput(session, "gmps_type", selected = "")
+      updateTextInput(session, "gpms_code", value = "")
+      updateTextInput(session, "sc_request", value = "")
+      updateTextInput(session, "test_date", value = "")
+      updateSelectInput(session, "master_customer_name", selected = "")
+      updateSelectInput(session, "country_client", selected = "")
+      updateSelectInput(session, "type_of_test", selected = "")
+      updateSelectInput(session, "category", selected = "")
+      updateSelectInput(session, "subsegment", selected = "")
+      updateSelectInput(session, "methodology", selected = "")
+      updateSelectInput(session, "panel", selected = "")
+      updateSelectInput(session, "test_facilities", selected = "")
+      
+      # Basculer vers l'onglet
+      updateTabItems(session, "sidebarMenu", "manual_test")
+      
+      showNotification(
+        paste("✅ Test chargé: '", selected_test$source_name, "' (ligne", dt_row_index, ")"),
+        type = "message"
+      )
+      
+    }, error = function(e) {
+      message("❌ Erreur chargement: ", e$message)
+      showNotification(paste("Erreur chargement:", e$message), type = "error")
+    })
   })
   
-  # ===== GESTION DU DOUBLE-CLIC POUR PRODUCT INFO RACCORDÉ =====
+  
+  
+  
+  
+  
+  # ===== GESTION DU DOUBLE-CLIC POUR PRODUCT INFO (VERSION FINALE CORRIGÉE) =====
   observeEvent(input$missing_product_info_table_cell_clicked, {
     click_info <- input$missing_product_info_table_cell_clicked
     
-    if(!is.null(click_info$value) && click_info$col %in% c(0, 1)) {
-      # Récupérer les données de la ligne cliquée
-      missing_data <- missing_product_info()
-      if(nrow(missing_data) > 0) {
-        row_index <- click_info$row + 1
-        if(row_index <= nrow(missing_data)) {
-          selected_row <- missing_data[row_index, ]
-          
-          # Charger le produit dans le formulaire
-          updateSelectizeInput(session, "product_source_name_input", selected = selected_row$source_name)
-          updateSelectizeInput(session, "nomprod_input", selected = selected_row$product_name)
-          updateTextInput(session, "code_prod_input", value = ifelse(is.na(selected_row$code_prod), "", selected_row$code_prod))
-          updateSelectizeInput(session, "base_input", selected = ifelse(is.na(selected_row$base), "", selected_row$base))
-          updateSelectInput(session, "ref_input", selected = ifelse(is.na(selected_row$ref), "", selected_row$ref))
-          updateTextInput(session, "dosage_input", value = ifelse(is.na(selected_row$dosage), "", selected_row$dosage))
-          
-          # Basculer vers l'onglet de saisie
-          updateTabItems(session, "sidebarMenu", "manual_product")
-          
-          showNotification(
-            paste("Produit", selected_row$product_name, "chargé pour saisie. Complétez les informations !"),
-            type = "message"
-          )
-        }
-      }
+    if(is.null(click_info) || is.null(click_info$row) || is.null(click_info$col)) {
+      message("❌ Click info invalide")
+      return()
     }
+    
+    con <- postgres_con()
+    if(is.null(con)) {
+      showNotification("Connexion SA_METADATA requise", type = "error")
+      return()
+    }
+    
+    # 🎯 UTILISER DIRECTEMENT L'INDEX DT (SANS +1)
+    dt_row_index <- click_info$row   # DT est basé sur 0, R sur 1
+    
+    message("=== CLICK PRODUCT FINAL CORRIGÉ ===")
+    message("Index DT (basé sur 0): ", click_info$row)
+    message("Index pour R (basé sur 1): ", dt_row_index)
+    
+    # Récupérer les données complètes
+    missing_data <- missing_product_info()
+    
+    if(nrow(missing_data) == 0) {
+      showNotification("Aucune donnée disponible", type = "error")
+      return()
+    }
+    
+    # Reproduire exactement le filtrage de DT
+    dt_displayed_data <- missing_data %>%
+      select(source_name, product_name, code_prod, base, ref, dosage, statut)
+    
+    message("Nombre total de lignes dans DT: ", nrow(dt_displayed_data))
+    
+    # 🎯 VÉRIFICATION DES LIMITES
+    if(dt_row_index < 1 || dt_row_index > nrow(dt_displayed_data)) {
+      showNotification(paste("Index invalide:", dt_row_index, "pour", nrow(dt_displayed_data), "lignes"), type = "error")
+      return()
+    }
+    
+    # 🎯 RÉCUPÉRER LA LIGNE CORRECTE
+    clicked_dt_row <- dt_displayed_data[dt_row_index, ]
+    
+    message("=== LIGNE SÉLECTIONNÉE ===")
+    message("Source name sélectionné: '", clicked_dt_row$source_name, "'")
+    message("Product name sélectionné: '", clicked_dt_row$product_name, "'")
+    
+    # Retrouver les données complètes correspondantes
+    selected_product <- missing_data %>%
+      filter(
+        source_name == clicked_dt_row$source_name & 
+          product_name == clicked_dt_row$product_name
+      ) %>%
+      slice(1)
+    
+    if(nrow(selected_product) == 0) {
+      showNotification("Produit non trouvé dans les données complètes", type = "error")
+      return()
+    }
+    
+    message("✅ Produit final sélectionné: '", selected_product$product_name, "' (source: '", selected_product$source_name, "')")
+    
+    tryCatch({
+      # Charger dans le formulaire
+      updateSelectizeInput(session, "product_source_name_input", selected = selected_product$source_name)
+      updateSelectizeInput(session, "nomprod_input", selected = selected_product$product_name)
+      updateTextInput(session, "code_prod_input", value = ifelse(is.na(selected_product$code_prod), "", selected_product$code_prod))
+      updateSelectizeInput(session, "base_input", selected = ifelse(is.na(selected_product$base), "", selected_product$base))
+      updateSelectInput(session, "ref_input", selected = ifelse(is.na(selected_product$ref), "", selected_product$ref))
+      updateTextInput(session, "dosage_input", value = ifelse(is.na(selected_product$dosage), "", selected_product$dosage))
+      
+      # Basculer vers l'onglet
+      updateTabItems(session, "sidebarMenu", "manual_product")
+      
+      showNotification(
+        paste("✅ Produit chargé: '", selected_product$product_name, "' (ligne", dt_row_index, ")"),
+        type = "message"
+      )
+      
+    }, error = function(e) {
+      message("❌ Erreur chargement: ", e$message)
+      showNotification(paste("Erreur chargement:", e$message), type = "error")
+    })
   })
+  
+  
   
   # ===== SAUVEGARDE TEST INFO RACCORDÉE =====
   observeEvent(input$save_test_info_btn, {
