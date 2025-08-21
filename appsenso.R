@@ -133,7 +133,7 @@ DB_CONFIG <- list(
 
 # Base de données utilisée (même que le script d'analyse)
 METADATA_DATABASE <- "SA_METADATA"
-
+RESULTS_DATABASE <- "SA_RESULTS_DATA"
 # ===== FONCTIONS DE CONNEXION POSTGRESQL RACCORDÉES =====
 create_postgres_connection <- function() {
   tryCatch({
@@ -157,7 +157,22 @@ safe_disconnect <- function(con) {
     message("🔌 Connexion PostgreSQL fermée")
   }
 }
-
+# ===== FONCTION DE CONNEXION POUR SA_RESULTS_DATA =====
+create_results_connection <- function() {
+  tryCatch({
+    con <- dbConnect(RPostgres::Postgres(),
+                     dbname = RESULTS_DATABASE,
+                     host = DB_CONFIG$host,
+                     port = DB_CONFIG$port,
+                     user = DB_CONFIG$user,
+                     password = DB_CONFIG$password)
+    message("✅ Connexion PostgreSQL établie avec succès à SA_RESULTS_DATA")
+    return(con)
+  }, error = function(e) {
+    message("❌ ERREUR connexion PostgreSQL SA_RESULTS_DATA", e$message)
+    return(NULL)
+  })
+}
 create_test_info_table <- function(con) {
   if(is.null(con)) return(FALSE)
   
@@ -431,8 +446,29 @@ get_unique_bases <- function(con) {
     return(c(""))
   })
 }
-
-
+# ===== FONCTION POUR CHARGER LES SOURCES UNIQUES DES RÉSULTATS =====
+get_unique_sources_from_results <- function(table_name) {
+  # Créer une connexion temporaire à SA_RESULTS_DATA
+  con_results <- create_results_connection()
+  if(is.null(con_results)) return(c(""))
+  
+  tryCatch({
+    if(dbExistsTable(con_results, table_name)) {
+      sources <- dbGetQuery(con_results, 
+                            paste0("SELECT DISTINCT source_name FROM ", table_name, " ORDER BY source_name"))
+      
+      if(nrow(sources) > 0) {
+        return(c("", sources$source_name))
+      }
+    }
+    return(c(""))
+  }, error = function(e) {
+    message("Erreur récupération sources: ", e$message)
+    return(c(""))
+  }, finally = {
+    safe_disconnect(con_results)
+  })
+}
 
 
 save_test_info_to_postgres <- function(con, test_info_data) {
@@ -751,7 +787,7 @@ ui <- dashboardPage(
       menuItem("Saisie Test Info", tabName = "manual_test", icon = icon("edit")),
       menuItem("Saisie Product Info", tabName = "manual_product", icon = icon("edit")),
       menuItem("Tables SA_METADATA", tabName = "postgres_tables", icon = icon("table")),
-      menuItem("Import/Export", tabName = "import", icon = icon("file-excel")),
+      menuItem("Changement Résultats", tabName = "change_results", icon = icon("edit")),
       menuItem("Debug", tabName = "debug", icon = icon("bug"))
     )
   ),
@@ -1286,26 +1322,94 @@ ui <- dashboardPage(
         )
       ),
       
-      # ===== ONGLET IMPORT/EXPORT =====
+      # ===== ONGLET CHANGEMENT RÉSULTATS =====
       tabItem(
-        tabName = "import",
+        tabName = "change_results",
         fluidRow(
           box(
-            title = "Import/Export Données", 
+            title = "Modification des Résultats SA_RESULTS", 
             status = "primary", 
             solidHeader = TRUE,
             width = 12,
             
-            h4("Fonctionnalités d'import/export"),
-            p("Cette section sera développée pour l'import/export de données Excel."),
+            # Sélection du type de test
+            fluidRow(
+              column(4,
+                     selectInput("results_test_type", "Type de Test",
+                                 choices = c("Strength" = "strengthandmo_results",
+                                             "Strength with Malodour" = "strengthandmo_results",
+                                             "Proximity" = "proximity_results",
+                                             "Triangular" = "triangulaire_results"),
+                                 selected = "strengthandmo_results")
+              ),
+              column(4,
+                     selectizeInput("results_source_filter", "Filtrer par Source",
+                                    choices = NULL,
+                                    options = list(
+                                      placeholder = "Toutes les sources",
+                                      create = FALSE
+                                    ))
+              ),
+              column(4,
+                     actionButton("load_results_btn", "Charger les Résultats",
+                                  icon = icon("download"),
+                                  class = "btn-primary",
+                                  style = "margin-top: 25px;")
+              )
+            ),
             
-            div(class = "alert alert-warning",
-                icon("construction"),
-                " Section en développement"
+            br(),
+            
+            # Message d'information
+            div(id = "results_info_message", class = "alert alert-info",
+                icon("info-circle"),
+                " Sélectionnez un type de test et cliquez sur 'Charger' pour afficher les résultats. Double-cliquez sur une cellule pour la modifier."
+            ),
+            
+            # Table éditable des résultats
+            withSpinner(
+              DT::dataTableOutput("editable_results_table"),
+              type = 4
+            ),
+            
+            br(),
+            
+            # Boutons d'action
+            fluidRow(
+              column(6,
+                     actionButton("save_changes_btn", "Sauvegarder les Modifications",
+                                  icon = icon("save"),
+                                  class = "btn-success btn-lg",
+                                  disabled = TRUE)
+              ),
+              column(6,
+                     actionButton("reset_changes_btn", "Annuler les Modifications",
+                                  icon = icon("undo"),
+                                  class = "btn-warning btn-lg",
+                                  disabled = TRUE)
+              )
+            ),
+            
+            br(),
+            
+            # Log des modifications
+            conditionalPanel(
+              condition = "output.has_changes",
+              box(
+                title = "Journal des Modifications", 
+                status = "warning", 
+                solidHeader = TRUE,
+                width = 12,
+                collapsible = TRUE,
+                collapsed = TRUE,
+                
+                verbatimTextOutput("changes_log")
+              )
             )
           )
         )
       ),
+      
       
       # ===== ONGLET DEBUG =====
       tabItem(
@@ -1347,6 +1451,333 @@ ui <- dashboardPage(
 
 # ===== SERVEUR AVEC LOGIQUE RACCORDÉE =====
 server <- function(input, output, session) {
+  # ===== VARIABLES RÉACTIVES POUR CHANGEMENT RÉSULTATS =====
+  results_data_original <- reactiveVal(NULL)
+  results_data_current <- reactiveVal(NULL)
+  results_table_name <- reactiveVal("")
+  changes_made <- reactiveVal(FALSE)
+  changes_log <- reactiveVal(character())
+  
+  
+  # ===== OBSERVATEUR POUR METTRE À JOUR LES SOURCES =====
+  observeEvent(input$results_test_type, {
+    sources <- get_unique_sources_from_results(input$results_test_type)
+    updateSelectizeInput(session, "results_source_filter", choices = sources)
+  })
+  
+  # ===== CHARGEMENT DES RÉSULTATS =====
+  observeEvent(input$load_results_btn, {
+    # Connexion à SA_RESULTS_DATA au lieu de SA_METADATA
+    con_results <- create_results_connection()
+    if(is.null(con_results)) {
+      showNotification("Erreur connexion SA_RESULTS", type = "error")
+      return()
+    }
+    
+    table_name <- input$results_test_type
+    results_table_name(table_name)
+    
+    showNotification("Chargement des résultats...", type = "default")
+    
+    tryCatch({
+      # Construire la requête SQL
+      if(input$results_source_filter != "") {
+        query <- paste0("SELECT * FROM ", table_name, 
+                        " WHERE source_name = '", input$results_source_filter, "'",
+                        " ORDER BY id")
+      } else {
+        query <- paste0("SELECT * FROM ", table_name, " ORDER BY id")
+      }
+      
+      results <- dbGetQuery(con_results, query)
+      
+      if(nrow(results) > 0) {
+        # Sauvegarder les données originales et courantes
+        results_data_original(results)
+        results_data_current(results)
+        changes_made(FALSE)
+        changes_log(character())
+        
+        # Activer/désactiver les boutons
+        shinyjs::disable("save_changes_btn")
+        shinyjs::disable("reset_changes_btn")
+        showNotification(paste("Chargé", nrow(results), "résultats depuis SA_RESULTS"), type = "message")
+        
+      } else {
+        showNotification("Aucun résultat trouvé", type = "warning")
+        results_data_original(NULL)
+        results_data_current(NULL)
+      }
+      
+    }, error = function(e) {
+      showNotification(paste("Erreur chargement:", e$message), type = "error")
+    }, finally = {
+      safe_disconnect(con_results)
+    })
+  })
+  
+  
+  # ===== AFFICHAGE DE LA TABLE ÉDITABLE =====
+  output$editable_results_table <- DT::renderDataTable({
+    data <- results_data_current()
+    
+    if(is.null(data) || nrow(data) == 0) {
+      return(DT::datatable(
+        data.frame(Message = "Aucune donnée chargée"),
+        options = list(dom = 't')
+      ))
+    }
+    
+    # Déterminer les colonnes éditables selon le type de table
+    table_name <- results_table_name()
+    
+    if(table_name == "triangulaire_results") {
+      # Colonnes pour triangulaire: reference, candidate, n_total, n_correct, p_value, decision
+      editable_cols <- c("reference", "candidate", "n_total", "n_correct", 
+                         "p_value", "decision")
+    } else if(table_name == "proximity_results") {
+      # Colonnes pour proximity: product_name, classe, mean_value, sd_value, n_observations
+      editable_cols <- c("product_name", "classe", "mean_value", "sd_value", 
+                         "n_observations")
+    } else {  # strengthandmo_results
+      # Colonnes pour strength: product_name, classe, mean_value, sd_value, n_observations, anova_5pct, anova_10pct
+      editable_cols <- c("product_name", "classe", "mean_value", "sd_value", 
+                         "n_observations", "anova_5pct", "anova_10pct")
+    }
+    
+    # Vérifier quelles colonnes éditables existent vraiment dans les données
+    editable_cols <- intersect(editable_cols, names(data))
+    
+    # Trouver les indices des colonnes éditables
+    col_indices <- which(names(data) %in% editable_cols) - 1  # -1 car DT est 0-based
+    
+    # Colonnes à cacher (id, created_at, updated_at)
+    hidden_cols <- which(names(data) %in% c("id", "created_at", "updated_at")) - 1
+    
+    # Créer le datatable
+    dt <- DT::datatable(
+      data,
+      editable = list(target = "cell", disable = list(columns = setdiff(0:(ncol(data)-1), col_indices))),
+      options = list(
+        pageLength = 15,
+        scrollX = TRUE,
+        scrollY = "400px",
+        columnDefs = list(
+          list(visible = FALSE, targets = hidden_cols)
+        )
+      ),
+      rownames = FALSE
+    )
+    
+    # Formater seulement les colonnes numériques qui existent
+    format_cols <- intersect(c("mean_value", "sd_value", "p_value"), names(data))
+    if(length(format_cols) > 0) {
+      dt <- dt %>% DT::formatRound(columns = format_cols, digits = 3)
+    }
+    
+    return(dt)
+  })
+  
+  
+  # ===== GESTION DES MODIFICATIONS DE CELLULES =====
+  observeEvent(input$editable_results_table_cell_edit, {
+    info <- input$editable_results_table_cell_edit
+    
+    if(is.null(info)) return()
+    
+    current_data <- results_data_current()
+    original_data <- results_data_original()
+    
+    # Récupérer les informations de la modification
+    row <- info$row
+    col <- info$col + 1  # +1 car R est 1-based
+    old_value <- original_data[row, col]
+    new_value <- info$value
+    col_name <- names(current_data)[col]
+    
+    # Validation selon le type de colonne
+    if(col_name %in% c("n_total", "n_correct", "n_observations")) {
+      # Colonnes entières
+      new_value <- as.integer(new_value)
+      if(is.na(new_value)) {
+        showNotification("Valeur entière invalide", type = "error")
+        return()
+      }
+    } else if(col_name %in% c("mean_value", "sd_value", "p_value")) {
+      # Colonnes numériques
+      new_value <- as.numeric(new_value)
+      if(is.na(new_value)) {
+        showNotification("Valeur numérique invalide", type = "error")
+        return()
+      }
+    } else if(col_name %in% c("anova_5pct", "anova_10pct")) {
+      # Colonnes booléennes
+      new_value <- tolower(new_value) %in% c("true", "t", "1", "yes", "oui")
+    }
+    
+    # Appliquer la modification
+    current_data[row, col] <- new_value
+    results_data_current(current_data)
+    
+    # Logger la modification
+    log_entry <- paste(
+      format(Sys.time(), "%H:%M:%S"),
+      "- Ligne", row,
+      "- Colonne:", col_name,
+      "- Ancienne valeur:", old_value,
+      "- Nouvelle valeur:", new_value
+    )
+    
+    current_log <- changes_log()
+    changes_log(c(current_log, log_entry))
+    
+    # Vérifier s'il y a des changements
+    if(!identical(current_data, original_data)) {
+      changes_made(TRUE)
+      shinyjs::enable("save_changes_btn")
+      shinyjs::enable("reset_changes_btn")
+    }
+  })
+  
+  # ===== SAUVEGARDE DES MODIFICATIONS =====
+  observeEvent(input$save_changes_btn, {
+    # ❌ PAS BESOIN DE CONNEXION ICI - on crée la connexion dans confirm_save
+    current_data <- results_data_current()
+    original_data <- results_data_original()
+    table_name <- results_table_name()
+    
+    if(is.null(current_data) || !changes_made()) {
+      showNotification("Aucune modification à sauvegarder", type = "warning")
+      return()
+    }
+    
+    
+    current_data <- results_data_current()
+    original_data <- results_data_original()
+    table_name <- results_table_name()
+    
+    if(is.null(current_data) || !changes_made()) {
+      showNotification("Aucune modification à sauvegarder", type = "warning")
+      return()
+    }
+    
+    showModal(modalDialog(
+      title = "Confirmer les modifications",
+      paste("Voulez-vous vraiment sauvegarder", sum(current_data != original_data, na.rm = TRUE), 
+            "modifications dans la base de données?"),
+      footer = tagList(
+        modalButton("Annuler"),
+        actionButton("confirm_save", "Confirmer", class = "btn-success")
+      )
+    ))
+  })
+  
+  # ===== CONFIRMATION DE SAUVEGARDE =====
+  observeEvent(input$confirm_save, {
+    removeModal()
+    
+    # Connexion à SA_RESULTS_DATA
+    con_results <- create_results_connection()
+    if(is.null(con_results)) {
+      showNotification("Connexion SA_RESULTS_DATA requise", type = "error")
+      return()
+    }
+    
+    current_data <- results_data_current()
+    table_name <- results_table_name()
+    
+    tryCatch({
+      # Mettre à jour chaque ligne modifiée
+      for(i in 1:nrow(current_data)) {
+        row_data <- current_data[i, ]
+        id <- row_data$id
+        
+        # Construire la requête UPDATE dynamiquement
+        update_cols <- setdiff(names(row_data), c("id", "created_at", "updated_at"))
+        
+        set_clause <- paste(
+          sapply(update_cols, function(col) {
+            val <- row_data[[col]]
+            if(is.na(val)) {
+              paste0(col, " = NULL")
+            } else if(is.logical(val)) {
+              paste0(col, " = ", ifelse(val, "TRUE", "FALSE"))
+            } else if(is.numeric(val)) {
+              paste0(col, " = ", val)
+            } else {
+              paste0(col, " = '", gsub("'", "''", as.character(val)), "'")
+            }
+          }),
+          collapse = ", "
+        )
+        
+        update_query <- paste0(
+          "UPDATE ", table_name,
+          " SET ", set_clause, ", updated_at = CURRENT_TIMESTAMP",
+          " WHERE id = ", id
+        )
+        
+        dbExecute(con_results, update_query)
+      }
+      
+      showNotification("Modifications sauvegardées avec succès dans SA_RESULTS!", type = "message")
+      
+      
+      # Recharger les données
+      results_data_original(current_data)
+      changes_made(FALSE)
+      changes_log(character())
+      shinyjs::disable("save_changes_btn")
+      shinyjs::disable("reset_changes_btn")
+      
+    }, error = function(e) {
+      showNotification(paste("Erreur sauvegarde:", e$message), type = "error")
+    }, finally = {
+      safe_disconnect(con_results)
+    })
+  })
+  
+  
+  # ===== ANNULATION DES MODIFICATIONS =====
+  observeEvent(input$reset_changes_btn, {
+    showModal(modalDialog(
+      title = "Annuler les modifications",
+      "Voulez-vous vraiment annuler toutes les modifications non sauvegardées?",
+      footer = tagList(
+        modalButton("Non"),
+        actionButton("confirm_reset", "Oui, annuler", class = "btn-warning")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirm_reset, {
+    removeModal()
+    
+    # Restaurer les données originales
+    results_data_current(results_data_original())
+    changes_made(FALSE)
+    changes_log(character())
+    shinyjs::disable("save_changes_btn")
+    shinyjs::disable("reset_changes_btn")
+    
+    showNotification("Modifications annulées", type = "default")
+  })
+  
+  # ===== OUTPUT POUR LE LOG DES MODIFICATIONS =====
+  output$changes_log <- renderText({
+    log <- changes_log()
+    if(length(log) == 0) {
+      "Aucune modification"
+    } else {
+      paste(log, collapse = "\n")
+    }
+  })
+  
+  # ===== OUTPUT POUR AFFICHER/CACHER LE LOG =====
+  output$has_changes <- reactive({
+    changes_made()
+  })
+  outputOptions(output, "has_changes", suspendWhenHidden = FALSE)
   
   # Variables réactives
   postgres_con <- reactiveVal(NULL)
@@ -1379,7 +1810,7 @@ server <- function(input, output, session) {
       shinyjs::removeClass("connection_status", "alert-warning")
       shinyjs::addClass("connection_status", "alert-success")
       
-      showNotification("Connexion SA_METADATA établie", type = "message")
+      showNotification("Connexion SA_METADATA établie", type = "default")
     } else {
       connection_status(FALSE)
       showNotification("Échec de la connexion SA_METADATA", type = "error")
@@ -1399,7 +1830,7 @@ server <- function(input, output, session) {
       shinyjs::removeClass("connection_status", "alert-success")
       shinyjs::addClass("connection_status", "alert-warning")
       
-      showNotification("Connexion SA_METADATA fermée", type = "message")
+      showNotification("Connexion SA_METADATA fermée", type = "default")
     }
   })
   
@@ -1503,7 +1934,7 @@ server <- function(input, output, session) {
       return()
     }
     
-    showNotification("Scan Test Info en cours...", type = "message")
+    showNotification("Scan Test Info en cours...", type = "default")
     test_scan_completed(FALSE)
     
     missing_tests <- detect_missing_test_info(con)
@@ -1516,7 +1947,7 @@ server <- function(input, output, session) {
         type = "warning"
       )
     } else {
-      showNotification("Tous les tests ont des informations complètes", type = "message")
+      showNotification("Tous les tests ont des informations complètes", type = "default")
     }
   })
   
@@ -1528,7 +1959,7 @@ server <- function(input, output, session) {
       return()
     }
     
-    showNotification("Scan Product Info en cours...", type = "message")
+    showNotification("Scan Product Info en cours...", type = "default")
     product_scan_completed(FALSE)
     
     missing_products <- detect_missing_product_info(con)
@@ -1541,7 +1972,7 @@ server <- function(input, output, session) {
         type = "warning"
       )
     } else {
-      showNotification("Tous les produits ont des champs complétés", type = "message")
+      showNotification("Tous les produits ont des champs complétés", type = "default")
     }
   })
   
@@ -2187,12 +2618,13 @@ server <- function(input, output, session) {
   })
   
   # ===== NETTOYAGE À LA FERMETURE =====
-  session$onSessionEnded(function() {
-    con <- postgres_con()
-    if(!is.null(con)) {
+  onStop(function() {
+    con <- isolate(postgres_con())
+    if(!is.null(con) && DBI::dbIsValid(con)) {
       safe_disconnect(con)
     }
   })
+  
 }
 
 # ===== LANCEMENT DE L'APPLICATION =====
