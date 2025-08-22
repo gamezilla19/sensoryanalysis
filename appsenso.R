@@ -446,24 +446,54 @@ get_unique_bases <- function(con) {
     return(c(""))
   })
 }
-# ===== FONCTION POUR CHARGER LES SOURCES UNIQUES DES RÉSULTATS =====
+# ===== FONCTION POUR CHARGER LES SOURCES UNIQUES DES RÉSULTATS (CORRIGÉE) =====
 get_unique_sources_from_results <- function(table_name) {
+  # Validation du nom de table
+  if(is.null(table_name) || table_name == "" || is.na(table_name)) {
+    message("❌ Nom de table invalide: '", table_name, "'")
+    return(c(""))
+  }
+  
   # Créer une connexion temporaire à SA_RESULTS_DATA
   con_results <- create_results_connection()
-  if(is.null(con_results)) return(c(""))
+  if(is.null(con_results)) {
+    message("❌ Impossible de se connecter à SA_RESULTS_DATA")
+    return(c(""))
+  }
   
   tryCatch({
-    if(dbExistsTable(con_results, table_name)) {
-      sources <- dbGetQuery(con_results, 
-                            paste0("SELECT DISTINCT source_name FROM ", table_name, " ORDER BY source_name"))
-      
-      if(nrow(sources) > 0) {
-        return(c("", sources$source_name))
-      }
+    # Vérifier que la table existe
+    if(!dbExistsTable(con_results, table_name)) {
+      message("⚠️ Table '", table_name, "' non trouvée dans SA_RESULTS_DATA")
+      return(c(""))
     }
-    return(c(""))
+    
+    # Vérifier que la table a des données
+    count_query <- paste0("SELECT COUNT(*) as count FROM ", table_name)
+    count_result <- dbGetQuery(con_results, count_query)
+    
+    if(count_result$count == 0) {
+      message("⚠️ Table '", table_name, "' est vide")
+      return(c(""))
+    }
+    
+    # Récupérer les sources uniques
+    sources_query <- paste0("SELECT DISTINCT source_name FROM ", table_name, 
+                            " WHERE source_name IS NOT NULL AND source_name != '' ORDER BY source_name")
+    sources <- dbGetQuery(con_results, sources_query)
+    
+    if(nrow(sources) > 0) {
+      unique_sources <- sources$source_name
+      unique_sources <- unique_sources[!is.na(unique_sources) & unique_sources != ""]
+      message("📋 Sources trouvées dans '", table_name, "': ", length(unique_sources))
+      return(c("", unique_sources))
+    } else {
+      message("⚠️ Aucune source trouvée dans '", table_name, "'")
+      return(c(""))
+    }
+    
   }, error = function(e) {
-    message("Erreur récupération sources: ", e$message)
+    message("❌ Erreur récupération sources depuis '", table_name, "': ", e$message)
     return(c(""))
   }, finally = {
     safe_disconnect(con_results)
@@ -547,7 +577,13 @@ save_product_info_to_postgres <- function(con, product_info_data) {
       code_prod = $3,
       base = $4,
       ref = $5,
-      dosage = $6
+      dosage = $6,
+      internal_name_additional_product = $7,
+      perfumer_code_additional_product = $8,
+      internal_code_additional_product = $9,
+      external_name_additional_product = $10,
+      external_code_additional_product = $11,
+      dosage_additional_product = $12
     WHERE source_name = $1 AND product_name = $2
     "
     
@@ -557,7 +593,13 @@ save_product_info_to_postgres <- function(con, product_info_data) {
       product_info_data$code_prod,
       product_info_data$base,
       product_info_data$ref,
-      product_info_data$dosage
+      product_info_data$dosage,
+      product_info_data$internal_name_additional_product,
+      product_info_data$perfumer_code_additional_product,
+      product_info_data$internal_code_additional_product,
+      product_info_data$external_name_additional_product,
+      product_info_data$external_code_additional_product,
+      product_info_data$dosage_additional_product
     ))
     
     if(result > 0) {
@@ -581,14 +623,14 @@ detect_missing_test_info <- function(con) {
   tryCatch({
     # Récupérer tous les tests depuis product_info (créée par le script d'analyse)
     if(!dbExistsTable(con, "product_info")) {
-      message("⚠️ Table product_info non trouvée")
+      message("⚠️ Product_info table not found")
       return(data.frame())
     }
     
     product_data <- dbReadTable(con, "product_info")
     
     if(nrow(product_data) == 0) {
-      message("⚠️ Table product_info vide")
+      message("⚠️ Product_info table empty")
       return(data.frame())
     }
     
@@ -625,7 +667,7 @@ detect_missing_test_info <- function(con) {
           panel = "",
           test_facilities = "",
           scale = "",  # ✅ AJOUT EXPLICITE
-          statut = "À compléter"
+          statut = "To complete"
         )
     } else {
       # ✅ VÉRIFIER QUELLES COLONNES EXISTENT AVANT DE LES UTILISER
@@ -686,6 +728,7 @@ detect_missing_test_info <- function(con) {
     }
     
     # Nettoyer les valeurs pour l'affichage
+    # Nettoyer les valeurs pour l'affichage ET CALCULER LE STATUT DYNAMIQUEMENT
     if(nrow(missing_tests) > 0) {
       missing_tests <- missing_tests %>%
         mutate(
@@ -702,8 +745,27 @@ detect_missing_test_info <- function(con) {
           methodology = ifelse(is.na(methodology) | is.null(methodology), "", as.character(methodology)),
           panel = ifelse(is.na(panel) | is.null(panel), "", as.character(panel)),
           test_facilities = ifelse(is.na(test_facilities) | is.null(test_facilities), "", as.character(test_facilities)),
-          scale = ifelse(is.na(scale) | is.null(scale), "", as.character(scale)),
-          statut = "À compléter"
+          scale = ifelse(is.na(scale) | is.null(scale), "", as.character(scale))
+        ) %>%
+        # ✅ CALCULER LE STATUT DYNAMIQUEMENT APRÈS NETTOYAGE
+        mutate(
+          statut = case_when(
+            # Vérifier si TOUS les champs obligatoires sont remplis
+            str_trim(gmps_type) != "" & 
+              str_trim(test_date) != "" & 
+              str_trim(master_customer_name) != "" & 
+              str_trim(country_client) != "" & 
+              str_trim(type_of_test) != "" & 
+              str_trim(category) != "" & 
+              str_trim(subsegment) != "" & 
+              str_trim(methodology) != "" & 
+              str_trim(panel) != "" & 
+              str_trim(test_facilities) != "" & 
+              str_trim(scale) != "" ~ "Complete",
+            
+            # Sinon, à compléter
+            TRUE ~ "To complete"
+          )
         )
     }
     
@@ -724,17 +786,18 @@ detect_missing_product_info <- function(con) {
   tryCatch({
     # Récupérer tous les produits depuis product_info (créée par le script d'analyse)
     if(!dbExistsTable(con, "product_info")) {
-      message("⚠️ Table product_info non trouvée")
+      message("⚠️ Product_info table not found")
       return(data.frame())
     }
     
     raw_data <- dbReadTable(con, "product_info")
     
     if(nrow(raw_data) == 0) {
-      message("⚠️ Table product_info vide")
+      message("⚠️ Product_info table empty")
       return(data.frame())
     }
     
+    # Chercher les champs vides OU NULL directement dans product_info
     # Chercher les champs vides OU NULL directement dans product_info
     missing_products <- raw_data %>%
       filter(
@@ -751,9 +814,22 @@ detect_missing_product_info <- function(con) {
         code_prod = ifelse(is.na(code_prod) | is.null(code_prod), "", as.character(code_prod)),
         base = ifelse(is.na(base) | is.null(base), "", as.character(base)),
         ref = ifelse(is.na(ref) | is.null(ref), "", as.character(ref)),
-        dosage = ifelse(is.na(dosage) | is.null(dosage), "", as.character(dosage)),
-        statut = "À compléter"
+        dosage = ifelse(is.na(dosage) | is.null(dosage), "", as.character(dosage))
+      ) %>%
+      # ✅ CALCULER LE STATUT DYNAMIQUEMENT
+      mutate(
+        statut = case_when(
+          # Vérifier si TOUS les champs sont remplis
+          str_trim(code_prod) != "" & 
+            str_trim(base) != "" & 
+            str_trim(ref) != "" & 
+            str_trim(dosage) != "" ~ "Complete",
+          
+          # Sinon, à compléter
+          TRUE ~ "To complete"
+        )
       )
+    
     
     message("🔍 Produits avec champs vides détectés: ", nrow(missing_products))
     
@@ -777,17 +853,17 @@ detect_missing_product_info <- function(con) {
 
 # ===== INTERFACE UTILISATEUR (INCHANGÉE) =====
 ui <- dashboardPage(
-  dashboardHeader(title = "Gestionnaire Métadonnées SA_METADATA - Script Analyse"),
+  dashboardHeader(title =  "SA_METADATA Metadata Manager - Analysis Script"),
   
   dashboardSidebar(
     sidebarMenu(
       menuItem("Connexion SA_METADATA", tabName = "connection", icon = icon("database")),
-      menuItem("Scanner Test Info", tabName = "scan_tests", icon = icon("search")),
-      menuItem("Scanner Product Info", tabName = "scan_products", icon = icon("search")),
-      menuItem("Saisie Test Info", tabName = "manual_test", icon = icon("edit")),
-      menuItem("Saisie Product Info", tabName = "manual_product", icon = icon("edit")),
-      menuItem("Tables SA_METADATA", tabName = "postgres_tables", icon = icon("table")),
-      menuItem("Changement Résultats", tabName = "change_results", icon = icon("edit")),
+      menuItem("Test Info Scanner", tabName = "scan_tests", icon = icon("search")),
+      menuItem("Product Info Scanner", tabName = "scan_products", icon = icon("search")),
+      menuItem("Test Info details", tabName = "manual_test", icon = icon("edit")),
+      menuItem("Product Info details", tabName = "manual_product", icon = icon("edit")),
+      menuItem("SA_METADATA tables", tabName = "postgres_tables", icon = icon("table")),
+      menuItem("Result changes", tabName = "change_results", icon = icon("edit")),
       menuItem("Debug", tabName = "debug", icon = icon("bug"))
     )
   ),
@@ -855,10 +931,10 @@ ui <- dashboardPage(
             solidHeader = TRUE,
             width = 12,
             
-            h4("État de la connexion:"),
+            h4("Connection Status:"),
             div(id = "connection_status", class = "alert alert-warning",
                 icon("exclamation-triangle"),
-                " Connexion non établie"
+                " Connection not established"
             ),
             
             br(),
@@ -867,7 +943,7 @@ ui <- dashboardPage(
               column(6,
                      actionButton(
                        "connect_btn",
-                       "Se Connecter à SA_METADATA",
+                       "Connect to SA_METADATA",
                        icon = icon("plug"),
                        class = "btn-success btn-lg"
                      )
@@ -875,7 +951,7 @@ ui <- dashboardPage(
               column(6,
                      actionButton(
                        "disconnect_btn",
-                       "Se Déconnecter",
+                       "Disconnect",
                        icon = icon("unlink"),
                        class = "btn-danger btn-lg"
                      )
@@ -884,12 +960,12 @@ ui <- dashboardPage(
             
             br(),
             
-            h4("Informations de connexion:"),
+            h4( "Connection Information:" ),
             verbatimTextOutput("connection_info"),
             
             br(),
             
-            h4("Tables disponibles dans SA_METADATA:"),
+            h4("Available Tables in SA_METADATA:"),
             verbatimTextOutput("available_tables")
           )
         )
@@ -900,21 +976,21 @@ ui <- dashboardPage(
         tabName = "scan_tests",
         fluidRow(
           box(
-            title = "Scanner Test Info Manquants", 
+            title = "Missing Test Info Scanner", 
             status = "primary", 
             solidHeader = TRUE,
             width = 12,
             
-            p("Cet outil identifie les tests qui existent dans Product_Info (créée par le script d'analyse) mais qui n'ont pas d'informations complètes dans Test_Info."),
+            p("This tool identifies tests that exist in Product_Info (created by the analysis script) but don't have complete information in Test_Info."),
             
             div(class = "alert alert-info",
                 icon("info-circle"),
-                " Double-cliquez sur un test de la liste pour le compléter directement !"
+                "Double-click on a test from the list to complete it directly!"
             ),
             
             actionButton(
               "scan_test_info_btn",
-              "Scanner Test Info Manquants",
+              "Missing Test Info Scanner",
               icon = icon("search"),
               class = "btn-primary btn-lg"
             ),
@@ -925,7 +1001,7 @@ ui <- dashboardPage(
               condition = "output.test_scan_completed",
               div(class = "alert alert-warning",
                   icon("mouse-pointer"),
-                  " Double-cliquez sur une ligne pour compléter le test directement !"
+                  "Double-click on a test from the list to complete it directly!"
               ),
               withSpinner(
                 DT::dataTableOutput("missing_test_info_table"),
@@ -941,21 +1017,21 @@ ui <- dashboardPage(
         tabName = "scan_products",
         fluidRow(
           box(
-            title = "Scanner Product Info Manquants", 
+            title = "Missing Product Info Scanner", 
             status = "primary", 
             solidHeader = TRUE,
             width = 12,
             
-            p("Cet outil identifie les produits qui existent dans Product_Info (créée par le script d'analyse) mais qui ont des champs vides (code_prod, base, ref, dosage)."),
+            p("This tool identifies products that exist in Product_Info (created by the analysis script) but have empty fields (code_prod, base, ref, dosage)."),
             
             div(class = "alert alert-info",
                 icon("info-circle"),
-                " Double-cliquez sur un produit de la liste pour le compléter directement !"
+                "Double-click on a product from the list to complete it directly!"
             ),
             
             actionButton(
               "scan_product_info_btn",
-              "Scanner Product Info Manquants",
+              "Missing Product Info Scanner",
               icon = icon("search"),
               class = "btn-primary btn-lg"
             ),
@@ -966,7 +1042,7 @@ ui <- dashboardPage(
               condition = "output.product_scan_completed",
               div(class = "alert alert-warning",
                   icon("mouse-pointer"),
-                  " Double-cliquez sur une ligne pour compléter le produit directement !"
+                  "Double-click on a product from the list to complete it directly!"
               ),
               withSpinner(
                 DT::dataTableOutput("missing_product_info_table"),
@@ -982,14 +1058,14 @@ ui <- dashboardPage(
         tabName = "manual_test",
         fluidRow(
           box(
-            title = "Saisie Test Info", 
+            title = "Test Info Entry", 
             status = "primary", 
             solidHeader = TRUE,
             width = 8,
             
             div(id = "test_indicator", class = "alert alert-info", style = "display: none;",
                 icon("info-circle"),
-                "Saisie en cours pour le test: ",
+                "Currently entering test: ",
                 textOutput("current_test_name", inline = TRUE)
             ),
             
@@ -1000,7 +1076,7 @@ ui <- dashboardPage(
             selectizeInput("source_name_input", "Source Name", 
                            choices = NULL,
                            options = list(
-                             placeholder = "Sélectionnez le source name du test",
+                             placeholder = "Select the Source Name of the test",
                              create = FALSE
                            )),
             
@@ -1021,7 +1097,7 @@ ui <- dashboardPage(
             
             fluidRow(
               column(6,
-                     textInput("sc_request", "S&C Request # (Numérique)", 
+                     textInput("sc_request", "S&C Request # (Numerical)", 
                                placeholder = "Ex: 123456")
               ),
               column(6,
@@ -1099,7 +1175,7 @@ ui <- dashboardPage(
               column(6,
                      actionButton(
                        "save_test_info_btn",
-                       "Enregistrer Test Info",
+                       "Save Test Info",
                        icon = icon("save"),
                        class = "btn-success btn-lg"
                      )
@@ -1107,7 +1183,7 @@ ui <- dashboardPage(
               column(6,
                      actionButton(
                        "save_test_and_next_btn",
-                       "Enregistrer et Suivant",
+                       "Save and Next",
                        icon = icon("arrow-right"),
                        class = "btn-primary btn-lg"
                      )
@@ -1118,53 +1194,53 @@ ui <- dashboardPage(
             
             actionButton(
               "clear_test_form_btn",
-              "Vider le Formulaire",
+              "Clear Form",
               icon = icon("eraser"),
               class = "btn-secondary"
             )
           ),
           
           box(
-            title = "Aide Test Info", 
+            title = "Test Info help", 
             status = "info", 
             solidHeader = TRUE,
             width = 4,
             
-            h4("Champs Test Info:"),
+            h4("Test into fields:"),
             tags$ul(
-              tags$li(strong("SOURCE NAME:"), " Identifiant unique du fichier source"),
-              tags$li(strong("GMPS TYPE:"), " Liste déroulante (INFO ou SUB)"),
-              tags$li(strong("GPMS CODE:"), " Texte libre"),
-              tags$li(strong("S&C REQUEST #:"), " Numérique uniquement"),
-              tags$li(strong("TEST NAME:"), " Nom unique du test"),
-              tags$li(strong("TEST DATE:"), " Format DD/MM/YYYY obligatoire"),
-              tags$li(strong("MASTER CUSTOMER NAME:"), " Liste déroulante"),
-              tags$li(strong("COUNTRY CLIENT:"), " Liste déroulante"),
-              tags$li(strong("TYPE OF TEST:"), " Liste déroulante"),
-              tags$li(strong("CATEGORY:"), " Liste déroulante"),
-              tags$li(strong("SUBSEGMENT:"), " Liste déroulante"),
-              tags$li(strong("METHODOLOGY:"), " Liste déroulante"),
-              tags$li(strong("PANEL:"), " Liste déroulante"),
-              tags$li(strong("TEST FACILITIES:"), " Liste déroulante"),
-              tags$li(strong("SCALE:"), " Liste déroulante (1 to 5 ou 0 to 10)")
+              tags$li(strong("SOURCE NAME:"), " Unique identifier of the source file"),
+              tags$li(strong("GMPS TYPE:"), " Dropdown list (INFO or SUB)"),
+              tags$li(strong("GPMS CODE:"), " Free text"),
+              tags$li(strong("S&C REQUEST #:"), " Numeric only"),
+              tags$li(strong("TEST NAME:"), " Unique test name"),
+              tags$li(strong("TEST DATE:"), " DD/MM/YYYY format required"),
+              tags$li(strong("MASTER CUSTOMER NAME:"), " Dropdown list"),
+              tags$li(strong("COUNTRY CLIENT:"), " Dropdown list"),
+              tags$li(strong("TYPE OF TEST:"), " Dropdown list"),
+              tags$li(strong("CATEGORY:"), " Dropdown list"),
+              tags$li(strong("SUBSEGMENT:"), " Dropdown list"),
+              tags$li(strong("METHODOLOGY:"), " Dropdown list"),
+              tags$li(strong("PANEL:"), " Dropdown list"),
+              tags$li(strong("TEST FACILITIES:"), " Dropdown list"),
+              tags$li(strong("SCALE:"), " Dropdown list (1 to 5 or 0 to 10)")
             ),
             
             br(),
             
-            h4("Tests restants:"),
+            h4("Remaining Tests:"),
             textOutput("remaining_tests_count"),
             
             br(),
             
             div(class = "alert alert-info",
                 icon("info-circle"),
-                strong("Validation automatique:"),
+                strong("Automatic Validation:"),
                 br(),
-                "• Date: format DD/MM/YYYY",
+                "• Date: DD/MM/YYYY format",
                 br(),
-                "• S&C Request: numérique uniquement",
+                "• S&C Request: numéric only",
                 br(),
-                "• Source Name: depuis Product_Info"
+                "• Source Name: from Product_Info"
             )
           )
         )
@@ -1175,14 +1251,14 @@ ui <- dashboardPage(
         tabName = "manual_product",
         fluidRow(
           box(
-            title = "Saisie Product Info", 
+            title = "Product Info Entry", 
             status = "primary", 
             solidHeader = TRUE,
             width = 8,
             
             div(id = "product_indicator", class = "alert alert-info", style = "display: none;",
                 icon("info-circle"),
-                "Saisie en cours pour le produit: ",
+                "Currently entering product: ",
                 textOutput("current_product_name", inline = TRUE)
             ),
             
@@ -1193,18 +1269,18 @@ ui <- dashboardPage(
             selectizeInput("product_source_name_input", "Source Name", 
                            choices = NULL,
                            options = list(
-                             placeholder = "Sélectionnez le source name du produit",
+                             placeholder = "Select the Source Name of the product",
                              create = FALSE
                            )),
             
-            textInput("code_prod_input", "Code Produit", 
+            textInput("code_prod_input", "Product Code", 
                       placeholder = "Ex: MGOB714A04, I, trial, Smell-It..."),
             
             # NOMPROD avec liste déroulante dynamique
-            selectizeInput("nomprod_input", "Nom Produit", 
+            selectizeInput("nomprod_input", "Product Name", 
                            choices = NULL,
                            options = list(
-                             placeholder = "Sélectionnez ou tapez le nom du produit",
+                             placeholder = "Select or type the product name",
                              create = FALSE
                            )),
             
@@ -1212,24 +1288,81 @@ ui <- dashboardPage(
             selectizeInput("base_input", "Base", 
                            choices = NULL,
                            options = list(
-                             placeholder = "Sélectionnez une base existante ou tapez une nouvelle",
+                             placeholder = "Select an existing base or type a new one",
                              create = TRUE
                            )),
             
-            selectInput("ref_input", "Référence (Y/N)",
+            selectInput("ref_input", "Reference (Y/N)",
                         choices = REF_CHOICES,
                         selected = ""),
             
-            textInput("dosage_input", "Dosage (Pourcentage)", 
-                      placeholder = "Ex: 1,50% ou 2.5%"),
+            textInput("dosage_input", "Dosage (Percentage)", 
+                      placeholder = "Ex: 1,50% or 2.5%"),
             
             br(),
+            
+            # ===== NOUVEAU CADRE ADDITIONAL PRODUCTS =====
+            box(
+              title = "Additional Products (Optional)", 
+              status = "info", 
+              solidHeader = TRUE,
+              width = 12,
+              collapsible = TRUE,
+              collapsed = TRUE,  # Fermé par défaut
+              
+              div(class = "alert alert-info",
+                  icon("info-circle"),
+                  "These fields are optional and can remain empty."
+              ),
+              
+              fluidRow(
+                column(6,
+                       textInput("internal_name_additional_product", 
+                                 "Internal Name Additional Product", 
+                                 placeholder = "Internal Name Additional Product...")
+                ),
+                column(6,
+                       textInput("perfumer_code_additional_product", 
+                                 "Perfumer Code Additional Product", 
+                                 placeholder = "Perfumer Code...")
+                )
+              ),
+              
+              fluidRow(
+                column(6,
+                       textInput("internal_code_additional_product", 
+                                 "Internal Code Additional Product", 
+                                 placeholder = "Internal Code Additional Product...")
+                ),
+                column(6,
+                       textInput("external_name_additional_product", 
+                                 "External Name Additional Product", 
+                                 placeholder = "External Name Additional Product...")
+                )
+              ),
+              
+              fluidRow(
+                column(6,
+                       textInput("external_code_additional_product", 
+                                 "External Code Additional Product", 
+                                 placeholder = "External Code Additional Product...")
+                ),
+                column(6,
+                       textInput("dosage_additional_product", 
+                                 "Dosage Additional Product", 
+                                 placeholder = "Ex: 2,5% or 1.8%...")
+                )
+              )
+            ),
+            
+            br(),
+            
             
             fluidRow(
               column(6,
                      actionButton(
                        "save_product_info_btn",
-                       "Enregistrer Product Info",
+                       "Save Product Info",
                        icon = icon("save"),
                        class = "btn-success btn-lg"
                      )
@@ -1237,7 +1370,7 @@ ui <- dashboardPage(
               column(6,
                      actionButton(
                        "save_product_and_next_btn",
-                       "Enregistrer et Suivant",
+                       "Save and Next",
                        icon = icon("arrow-right"),
                        class = "btn-primary btn-lg"
                      )
@@ -1248,44 +1381,50 @@ ui <- dashboardPage(
             
             actionButton(
               "clear_product_form_btn",
-              "Vider le Formulaire",
+              "Clear Form",
               icon = icon("eraser"),
               class = "btn-secondary"
             )
           ),
           
           box(
-            title = "Aide Product Info", 
+            title = "Product Info Help", 
             status = "info", 
             solidHeader = TRUE,
             width = 4,
             
             h4("Champs Product Info:"),
             tags$ul(
-              tags$li(strong("SOURCE NAME:"), " Identifiant unique du fichier source"),
-              tags$li(strong("CODE_PROD:"), " Texte libre (I, trial, Smell-It, code officiel...)"),
-              tags$li(strong("NOMPROD:"), " Liste déroulante basée sur Product_Info"),
-              tags$li(strong("BASE:"), " Liste + texte libre (bases existantes + nouvelles)"),
-              tags$li(strong("REF:"), " Y (Oui) ou N (Non) uniquement"),
-              tags$li(strong("DOSAGE:"), " Format pourcentage (1,5% ou 2.5%)")
+              tags$li(strong("SOURCE NAME:"), " Unique identifier of the source file"),
+              tags$li(strong("CODE_PROD:"), " Free text (I, trial, Smell-It, official code...)"),
+              tags$li(strong("NOMPROD:"), " Dropdown list based on Product_Info"),
+              tags$li(strong("BASE:"), " List + free text (existing bases + new ones)"),
+              tags$li(strong("REF:"), " Y (Yes) or N (No) only"),
+              tags$li(strong("DOSAGE:"), " Percentage format (1.5% or 2.5%)"),
+              tags$li(strong("INTERNAL NAME ADDITIONAL:"), " Internal additional product name (optional)"),
+              tags$li(strong("PERFUMER CODE ADDITIONAL:"), " Additional perfumer code (optional)"),
+              tags$li(strong("INTERNAL CODE ADDITIONAL:"), " Internal additional code (optional)"),
+              tags$li(strong("EXTERNAL NAME ADDITIONAL:"), " External additional product name (optional)"),
+              tags$li(strong("EXTERNAL CODE ADDITIONAL:"), " External additional code (optional)"),
+              tags$li(strong("DOSAGE ADDITIONAL:"), " Additional product dosage - percentage format (optional)")
             ),
             
             br(),
             
-            h4("Produits restants:"),
+            h4("Remaining Product:"),
             textOutput("remaining_products_count"),
             
             br(),
             
             div(class = "alert alert-info",
                 icon("info-circle"),
-                strong("Validation automatique:"),
+                strong("Automatic Validation:"),
                 br(),
-                "• Dosage: format pourcentage",
+                "• Dosage: percentage format",
                 br(),
-                "• Référence: Y ou N uniquement",
+                "• Reference: Y or N only",
                 br(),
-                "• Nom Produit: depuis Product_Info"
+                "• Nom Produit: from Product_Info"
             )
           )
         )
@@ -1296,7 +1435,7 @@ ui <- dashboardPage(
         tabName = "postgres_tables",
         fluidRow(
           box(
-            title = "Tables SA_METADATA", 
+            title = "SA_METADATA Tables", 
             status = "primary", 
             solidHeader = TRUE,
             width = 12,
@@ -1304,15 +1443,15 @@ ui <- dashboardPage(
             tabsetPanel(
               tabPanel("Test_Info",
                        br(),
-                       actionButton("refresh_test_info_btn", "Actualiser", 
+                       actionButton("refresh_test_info_btn", "Refresh", 
                                     icon = icon("refresh"), class = "btn-info"),
                        br(), br(),
                        withSpinner(DT::dataTableOutput("test_info_table"), type = 4)
               ),
               tabPanel("Product_Info (Script)",
                        br(),
-                       p("Table créée automatiquement par le script d'analyse - MISE À JOUR DIRECTE"),
-                       actionButton("refresh_product_info_script_btn", "Actualiser", 
+                       p("Table automatically created by the analysis script"),
+                       actionButton("refresh_product_info_script_btn", "Refresh", 
                                     icon = icon("refresh"), class = "btn-info"),
                        br(), br(),
                        withSpinner(DT::dataTableOutput("product_info_script_table"), type = 4)
@@ -1327,7 +1466,7 @@ ui <- dashboardPage(
         tabName = "change_results",
         fluidRow(
           box(
-            title = "Modification des Résultats SA_RESULTS", 
+            title = "SA_RESULTS Modification", 
             status = "primary", 
             solidHeader = TRUE,
             width = 12,
@@ -1335,7 +1474,7 @@ ui <- dashboardPage(
             # Sélection du type de test
             fluidRow(
               column(4,
-                     selectInput("results_test_type", "Type de Test",
+                     selectInput("results_test_type", "Test Type",
                                  choices = c("Strength" = "strengthandmo_results",
                                              "Strength with Malodour" = "strengthandmo_results",
                                              "Proximity" = "proximity_results",
@@ -1343,15 +1482,15 @@ ui <- dashboardPage(
                                  selected = "strengthandmo_results")
               ),
               column(4,
-                     selectizeInput("results_source_filter", "Filtrer par Source",
+                     selectizeInput("results_source_filter", "Filtrer by Source",
                                     choices = NULL,
                                     options = list(
-                                      placeholder = "Toutes les sources",
+                                      placeholder = "All sources",
                                       create = FALSE
                                     ))
               ),
               column(4,
-                     actionButton("load_results_btn", "Charger les Résultats",
+                     actionButton("load_results_btn", "Load Results",
                                   icon = icon("download"),
                                   class = "btn-primary",
                                   style = "margin-top: 25px;")
@@ -1363,7 +1502,7 @@ ui <- dashboardPage(
             # Message d'information
             div(id = "results_info_message", class = "alert alert-info",
                 icon("info-circle"),
-                " Sélectionnez un type de test et cliquez sur 'Charger' pour afficher les résultats. Double-cliquez sur une cellule pour la modifier."
+                "Select a test type and click 'Load' to display results. Double-click on a cell to edit it."
             ),
             
             # Table éditable des résultats
@@ -1377,13 +1516,13 @@ ui <- dashboardPage(
             # Boutons d'action
             fluidRow(
               column(6,
-                     actionButton("save_changes_btn", "Sauvegarder les Modifications",
+                     actionButton("save_changes_btn", "Save changes",
                                   icon = icon("save"),
                                   class = "btn-success btn-lg",
                                   disabled = TRUE)
               ),
               column(6,
-                     actionButton("reset_changes_btn", "Annuler les Modifications",
+                     actionButton("reset_changes_btn", "Cancel Changes",
                                   icon = icon("undo"),
                                   class = "btn-warning btn-lg",
                                   disabled = TRUE)
@@ -1396,7 +1535,7 @@ ui <- dashboardPage(
             conditionalPanel(
               condition = "output.has_changes",
               box(
-                title = "Journal des Modifications", 
+                title = "Change log", 
                 status = "warning", 
                 solidHeader = TRUE,
                 width = 12,
@@ -1416,29 +1555,29 @@ ui <- dashboardPage(
         tabName = "debug",
         fluidRow(
           box(
-            title = "Informations de Debug SA_METADATA", 
+            title = "SA_METADATA Debug Information", 
             status = "warning", 
             solidHeader = TRUE,
             width = 12,
             
-            h4("État connexion SA_METADATA:"),
+            h4("SA_METADATA Connection Status:"),
             verbatimTextOutput("debug_postgres_status"),
             
             br(),
             
-            h4("Tables SA_METADATA disponibles:"),
+            h4("Available SA_METADATA Tables:"),
             verbatimTextOutput("debug_postgres_tables"),
             
             br(),
             
-            h4("Statistiques des données:"),
+            h4("Data Statistics:"),
             verbatimTextOutput("debug_data_stats"),
             
             br(),
             
             actionButton(
               "test_postgres_btn",
-              "Test Connexion SA_METADATA",
+              "Test SA_METADATA Connection",
               icon = icon("database"),
               class = "btn-warning"
             )
@@ -1523,7 +1662,7 @@ server <- function(input, output, session) {
     
     if(is.null(data) || nrow(data) == 0) {
       return(DT::datatable(
-        data.frame(Message = "Aucune donnée chargée"),
+        data.frame(Message = "No data loaded"),
         options = list(dom = 't')
       ))
     }
@@ -1662,12 +1801,12 @@ server <- function(input, output, session) {
     }
     
     showModal(modalDialog(
-      title = "Confirmer les modifications",
-      paste("Voulez-vous vraiment sauvegarder", sum(current_data != original_data, na.rm = TRUE), 
-            "modifications dans la base de données?"),
+      title = "Confirm Changes",
+      paste("Do you really want to save", sum(current_data != original_data, na.rm = TRUE), 
+            "changes to the database?"),
       footer = tagList(
-        modalButton("Annuler"),
-        actionButton("confirm_save", "Confirmer", class = "btn-success")
+        modalButton("Cancel"),
+        actionButton("confirm_save", "Confirm", class = "btn-success")
       )
     ))
   })
@@ -1741,11 +1880,11 @@ server <- function(input, output, session) {
   # ===== ANNULATION DES MODIFICATIONS =====
   observeEvent(input$reset_changes_btn, {
     showModal(modalDialog(
-      title = "Annuler les modifications",
-      "Voulez-vous vraiment annuler toutes les modifications non sauvegardées?",
+      title = "Cancel Changes",
+      "Do you really want to cancel all unsaved changes?",
       footer = tagList(
         modalButton("Non"),
-        actionButton("confirm_reset", "Oui, annuler", class = "btn-warning")
+        actionButton("confirm_reset", "Yes, cancel", class = "btn-warning")
       )
     ))
   })
@@ -1760,14 +1899,14 @@ server <- function(input, output, session) {
     shinyjs::disable("save_changes_btn")
     shinyjs::disable("reset_changes_btn")
     
-    showNotification("Modifications annulées", type = "default")
+    showNotification("Modifications canceled", type = "default")
   })
   
   # ===== OUTPUT POUR LE LOG DES MODIFICATIONS =====
   output$changes_log <- renderText({
     log <- changes_log()
     if(length(log) == 0) {
-      "Aucune modification"
+      "No changes"
     } else {
       paste(log, collapse = "\n")
     }
@@ -1806,14 +1945,14 @@ server <- function(input, output, session) {
       
       # Mettre à jour l'interface
       shinyjs::html("connection_status", 
-                    HTML('<i class="fa fa-check-circle status-connected"></i> Connexion établie avec succès à SA_METADATA'))
+                    HTML('<i class="fa fa-check-circle status-connected"></i>Successful connection to SA_METADATA'))
       shinyjs::removeClass("connection_status", "alert-warning")
       shinyjs::addClass("connection_status", "alert-success")
       
-      showNotification("Connexion SA_METADATA établie", type = "default")
+      showNotification("SA_METADATA connection established", type = "default")
     } else {
       connection_status(FALSE)
-      showNotification("Échec de la connexion SA_METADATA", type = "error")
+      showNotification("SA_METADATA connection failed", type = "error")
     }
   })
   
@@ -1830,7 +1969,7 @@ server <- function(input, output, session) {
       shinyjs::removeClass("connection_status", "alert-success")
       shinyjs::addClass("connection_status", "alert-warning")
       
-      showNotification("Connexion SA_METADATA fermée", type = "default")
+      showNotification("SA_METADATA connection closed", type = "default")
     }
   })
   
@@ -1900,11 +2039,11 @@ server <- function(input, output, session) {
         "Port: 5432",
         "Database: SA_METADATA",
         "User: dbadmin",
-        "Status: Connecté",
+        "Status: Connected",
         sep = "\n"
       )
     } else {
-      "Connexion non établie"
+      "Connection not established"
     }
   })
   
@@ -1922,7 +2061,7 @@ server <- function(input, output, session) {
         paste("Erreur listage tables:", e$message)
       })
     } else {
-      "Connexion requise"
+      "Require connection to database"
     }
   })
   
@@ -1930,11 +2069,11 @@ server <- function(input, output, session) {
   observeEvent(input$scan_test_info_btn, {
     con <- postgres_con()
     if(is.null(con)) {
-      showNotification("Connexion SA_METADATA requise", type = "error")
+      showNotification("SA_METADATA connection required", type = "error")
       return()
     }
     
-    showNotification("Scan Test Info en cours...", type = "default")
+    showNotification("Scan Test Info ongoing...", type = "default")
     test_scan_completed(FALSE)
     
     missing_tests <- detect_missing_test_info(con)
@@ -1943,11 +2082,11 @@ server <- function(input, output, session) {
     
     if(nrow(missing_tests) > 0) {
       showNotification(
-        paste("Trouvé", nrow(missing_tests), "tests sans informations complètes"),
+        paste("Trouvé", nrow(missing_tests), "tests without complete information"),
         type = "warning"
       )
     } else {
-      showNotification("Tous les tests ont des informations complètes", type = "default")
+      showNotification("All the tests have complete informations", type = "default")
     }
   })
   
@@ -1955,11 +2094,11 @@ server <- function(input, output, session) {
   observeEvent(input$scan_product_info_btn, {
     con <- postgres_con()
     if(is.null(con)) {
-      showNotification("Connexion SA_METADATA requise", type = "error")
+      showNotification("SA_METADATA connection required", type = "error")
       return()
     }
     
-    showNotification("Scan Product Info en cours...", type = "default")
+    showNotification("Scan Product Info ongoing...", type = "default")
     product_scan_completed(FALSE)
     
     missing_products <- detect_missing_product_info(con)
@@ -1968,11 +2107,11 @@ server <- function(input, output, session) {
     
     if(nrow(missing_products) > 0) {
       showNotification(
-        paste("Trouvé", nrow(missing_products), "produits avec champs vides"),
+        paste("Trouvé", nrow(missing_products), "Product with empty columns"),
         type = "warning"
       )
     } else {
-      showNotification("Tous les produits ont des champs complétés", type = "default")
+      showNotification("Well done, all products are completed", type = "default")
     }
   })
   
@@ -1984,8 +2123,8 @@ server <- function(input, output, session) {
     
     if(nrow(missing_data) == 0) {
       data.frame(
-        Message = "Aucun test manquant détecté",
-        Details = "Tous les tests ont des informations complètes"
+        Message = "No missing test detected",
+        Details = "Well done, all tests are completed"
       )
     } else {
       missing_data %>%
@@ -2011,8 +2150,8 @@ server <- function(input, output, session) {
     
     if(nrow(missing_data) == 0) {
       data.frame(
-        Message = "Aucun produit avec champs vides détecté",
-        Details = "Tous les produits ont des champs complétés"
+        Message = "No product with empty columns detected",
+        Details = "All products columns are completed"
       )
     } else {
       missing_data %>%
@@ -2043,7 +2182,7 @@ server <- function(input, output, session) {
     
     con <- postgres_con()
     if(is.null(con)) {
-      showNotification("Connexion SA_METADATA requise", type = "error")
+      showNotification("SA_METADATA connection required", type = "error")
       return()
     }
     
@@ -2058,7 +2197,7 @@ server <- function(input, output, session) {
     missing_data <- missing_test_info()
     
     if(nrow(missing_data) == 0) {
-      showNotification("Aucune donnée disponible", type = "error")
+      showNotification("No data available", type = "error")
       return()
     }
     
@@ -2090,11 +2229,11 @@ server <- function(input, output, session) {
       slice(1)
     
     if(nrow(selected_test) == 0) {
-      showNotification("Test non trouvé dans les données complètes", type = "error")
+      showNotification("Test not found", type = "error")
       return()
     }
     
-    message("✅ Test final sélectionné: '", selected_test$source_name, "'")
+    message("✅ Final Test selected'", selected_test$source_name, "'")
     
     tryCatch({
       # Charger dans le formulaire
@@ -2120,7 +2259,7 @@ server <- function(input, output, session) {
       updateTabItems(session, "sidebarMenu", "manual_test")
       
       showNotification(
-        paste("✅ Test chargé: '", selected_test$source_name, "' (ligne", dt_row_index, ")"),
+        paste(" Test loaded '", selected_test$source_name, "' (line", dt_row_index, ")"),
         type = "message"
       )
       
@@ -2142,7 +2281,7 @@ server <- function(input, output, session) {
     
     con <- postgres_con()
     if(is.null(con)) {
-      showNotification("Connexion SA_METADATA requise", type = "error")
+      showNotification("SA_METADATA connection required", type = "error")
       return()
     }
     
@@ -2157,7 +2296,7 @@ server <- function(input, output, session) {
     missing_data <- missing_product_info()
     
     if(nrow(missing_data) == 0) {
-      showNotification("Aucune donnée disponible", type = "error")
+      showNotification("No data available", type = "error")
       return()
     }
     
@@ -2177,8 +2316,8 @@ server <- function(input, output, session) {
     clicked_dt_row <- dt_displayed_data[dt_row_index, ]
     
     message("=== LIGNE SÉLECTIONNÉE ===")
-    message("Source name sélectionné: '", clicked_dt_row$source_name, "'")
-    message("Product name sélectionné: '", clicked_dt_row$product_name, "'")
+    message("Source name selected: '", clicked_dt_row$source_name, "'")
+    message("Product name selected: '", clicked_dt_row$product_name, "'")
     
     # Retrouver les données complètes correspondantes
     selected_product <- missing_data %>%
@@ -2189,11 +2328,11 @@ server <- function(input, output, session) {
       slice(1)
     
     if(nrow(selected_product) == 0) {
-      showNotification("Produit non trouvé dans les données complètes", type = "error")
+      showNotification("Product not found in complete data", type = "error")
       return()
     }
     
-    message("✅ Produit final sélectionné: '", selected_product$product_name, "' (source: '", selected_product$source_name, "')")
+    message("Final product Selected'", selected_product$product_name, "' (source: '", selected_product$source_name, "')")
     
     tryCatch({
       # Charger dans le formulaire
@@ -2203,54 +2342,95 @@ server <- function(input, output, session) {
       updateSelectizeInput(session, "base_input", selected = ifelse(is.na(selected_product$base), "", selected_product$base))
       updateSelectInput(session, "ref_input", selected = ifelse(is.na(selected_product$ref), "", selected_product$ref))
       updateTextInput(session, "dosage_input", value = ifelse(is.na(selected_product$dosage), "", selected_product$dosage))
+      if("internal_name_additional_product" %in% names(selected_product)) {
+        updateTextInput(session, "internal_name_additional_product", 
+                        value = ifelse(is.na(selected_product$internal_name_additional_product), "", selected_product$internal_name_additional_product))
+      } else {
+        updateTextInput(session, "internal_name_additional_product", value = "")
+      }
+      
+      if("perfumer_code_additional_product" %in% names(selected_product)) {
+        updateTextInput(session, "perfumer_code_additional_product", 
+                        value = ifelse(is.na(selected_product$perfumer_code_additional_product), "", selected_product$perfumer_code_additional_product))
+      } else {
+        updateTextInput(session, "perfumer_code_additional_product", value = "")
+      }
+      
+      if("internal_code_additional_product" %in% names(selected_product)) {
+        updateTextInput(session, "internal_code_additional_product", 
+                        value = ifelse(is.na(selected_product$internal_code_additional_product), "", selected_product$internal_code_additional_product))
+      } else {
+        updateTextInput(session, "internal_code_additional_product", value = "")
+      }
+      
+      if("external_name_additional_product" %in% names(selected_product)) {
+        updateTextInput(session, "external_name_additional_product", 
+                        value = ifelse(is.na(selected_product$external_name_additional_product), "", selected_product$external_name_additional_product))
+      } else {
+        updateTextInput(session, "external_name_additional_product", value = "")
+      }
+      
+      if("external_code_additional_product" %in% names(selected_product)) {
+        updateTextInput(session, "external_code_additional_product", 
+                        value = ifelse(is.na(selected_product$external_code_additional_product), "", selected_product$external_code_additional_product))
+      } else {
+        updateTextInput(session, "external_code_additional_product", value = "")
+      }
+      
+      if("dosage_additional_product" %in% names(selected_product)) {
+        updateTextInput(session, "dosage_additional_product", 
+                        value = ifelse(is.na(selected_product$dosage_additional_product), "", selected_product$dosage_additional_product))
+      } else {
+        updateTextInput(session, "dosage_additional_product", value = "")
+      }
       
       # Basculer vers l'onglet
       updateTabItems(session, "sidebarMenu", "manual_product")
       
       showNotification(
-        paste("✅ Produit chargé: '", selected_product$product_name, "' (ligne", dt_row_index, ")"),
+        paste("Product loaded: '", selected_product$product_name, "' (ligne", dt_row_index, ")"),
         type = "message"
       )
       
     }, error = function(e) {
       message("❌ Erreur chargement: ", e$message)
-      showNotification(paste("Erreur chargement:", e$message), type = "error")
+      showNotification(paste("Error while loading:", e$message), type = "error")
     })
-  })
+  })  
   
   
   
-  # ===== SAUVEGARDE TEST INFO RACCORDÉE =====
+  # ===== SAUVEGARDE TEST INFO RACCORDÉE (CORRIGÉE) =====
   observeEvent(input$save_test_info_btn, {
     con <- postgres_con()
     if(is.null(con)) {
-      showNotification("Connexion SA_METADATA requise", type = "error")
+      showNotification("SA_METADATA connection required", type = "error")
       return()
     }
     
     # Validation des champs obligatoires
     if(is.null(input$source_name_input) || input$source_name_input == "") {
-      showNotification("Source Name est obligatoire", type = "error")
+      showNotification("Source Name is mandatory", type = "error")
       return()
     }
     
     if(is.null(input$test_name_input) || input$test_name_input == "") {
-      showNotification("Test Name est obligatoire", type = "error")
+      showNotification("Test Name is mandatory", type = "error")
       return()
     }
     
     # Validation des formats
     if(!is.null(input$test_date) && input$test_date != "" && !validate_date_format(input$test_date)) {
-      showNotification("Format de date invalide. Utilisez DD/MM/YYYY", type = "error")
+      showNotification("Invalid Date Format. Use DD/MM/YYYY", type = "error")
       return()
     }
     
     if(!is.null(input$sc_request) && input$sc_request != "" && !validate_numeric_format(input$sc_request)) {
-      showNotification("S&C Request doit être numérique", type = "error")
+      showNotification("S&C Request must be numerical", type = "error")
       return()
     }
     
-    # Préparer les données
+    # ✅ PRÉPARER LES DONNÉES (AVANT LA SAUVEGARDE)
     test_data <- data.frame(
       source_name = input$source_name_input,
       test_name = input$test_name_input,
@@ -2270,44 +2450,54 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
     
-    # Sauvegarder
+    # ✅ SAUVEGARDER ET ACTUALISER
     if(save_test_info_to_postgres(con, test_data)) {
-      showNotification("Test Info sauvegardé avec succès !", type = "message")
+      showNotification("Test Info successfully saved !", type = "message")
       
       # Actualiser les données manquantes
       missing_tests <- detect_missing_test_info(con)
       missing_test_info(missing_tests)
+      
+      # ✅ ACTUALISER AUTOMATIQUEMENT LA TABLE TEST_INFO
+      shinyjs::click("refresh_test_info_btn")
+      
     } else {
-      showNotification("Erreur lors de la sauvegarde", type = "error")
+      showNotification("Error while saving", type = "error")
     }
   })
   
-  # ===== SAUVEGARDE PRODUCT INFO RACCORDÉE =====
+  
+  # ===== SAUVEGARDE PRODUCT INFO RACCORDÉE (CORRIGÉE) =====
   observeEvent(input$save_product_info_btn, {
     con <- postgres_con()
     if(is.null(con)) {
-      showNotification("Connexion SA_METADATA requise", type = "error")
+      showNotification("SA_METADATA connection required", type = "error")
       return()
     }
     
     # Validation des champs obligatoires
     if(is.null(input$product_source_name_input) || input$product_source_name_input == "") {
-      showNotification("Source Name est obligatoire", type = "error")
+      showNotification("Source Name is mandatory", type = "error")
       return()
     }
     
     if(is.null(input$nomprod_input) || input$nomprod_input == "") {
-      showNotification("Nom Produit est obligatoire", type = "error")
+      showNotification("Product Name is mandatory", type = "error")
       return()
     }
     
     # Validation des formats
     if(!is.null(input$dosage_input) && input$dosage_input != "" && !validate_percentage_format(input$dosage_input)) {
-      showNotification("Format de dosage invalide. Ex: 1,5% ou 2.5%", type = "error")
+      showNotification("Invalid Dosage Format. Ex: 1,5% ou 2.5%", type = "error")
       return()
     }
     
-    # Préparer les données
+    if(!is.null(input$dosage_additional_product) && input$dosage_additional_product != "" && !validate_percentage_format(input$dosage_additional_product)) {
+      showNotification("Invalid additional dosage format. Ex: 1.5% or 2.5%", type = "error")
+      return()
+    }
+    
+    # ✅ PRÉPARER LES DONNÉES (AVANT LA SAUVEGARDE)
     product_data <- data.frame(
       source_name = input$product_source_name_input,
       product_name = input$nomprod_input,
@@ -2315,16 +2505,26 @@ server <- function(input, output, session) {
       base = ifelse(is.null(input$base_input) || input$base_input == "", "", input$base_input),
       ref = ifelse(is.null(input$ref_input) || input$ref_input == "", "", input$ref_input),
       dosage = ifelse(is.null(input$dosage_input) || input$dosage_input == "", "", input$dosage_input),
+      internal_name_additional_product = ifelse(is.null(input$internal_name_additional_product) || input$internal_name_additional_product == "", "", input$internal_name_additional_product),
+      perfumer_code_additional_product = ifelse(is.null(input$perfumer_code_additional_product) || input$perfumer_code_additional_product == "", "", input$perfumer_code_additional_product),
+      internal_code_additional_product = ifelse(is.null(input$internal_code_additional_product) || input$internal_code_additional_product == "", "", input$internal_code_additional_product),
+      external_name_additional_product = ifelse(is.null(input$external_name_additional_product) || input$external_name_additional_product == "", "", input$external_name_additional_product),
+      external_code_additional_product = ifelse(is.null(input$external_code_additional_product) || input$external_code_additional_product == "", "", input$external_code_additional_product),
+      dosage_additional_product = ifelse(is.null(input$dosage_additional_product) || input$dosage_additional_product == "", "", input$dosage_additional_product),
       stringsAsFactors = FALSE
     )
     
-    # Sauvegarder
+    # ✅ SAUVEGARDER ET ACTUALISER
     if(save_product_info_to_postgres(con, product_data)) {
       showNotification("Product Info sauvegardé avec succès !", type = "message")
       
       # Actualiser les données manquantes
       missing_products <- detect_missing_product_info(con)
       missing_product_info(missing_products)
+      
+      # ✅ ACTUALISER AUTOMATIQUEMENT LA TABLE PRODUCT_INFO
+      shinyjs::click("refresh_product_info_script_btn")
+      
     } else {
       showNotification("Erreur lors de la sauvegarde", type = "error")
     }
@@ -2383,7 +2583,7 @@ server <- function(input, output, session) {
       updateSelectInput(session, "ref_input", selected = ifelse(is.na(next_product$ref), "", next_product$ref))
       updateTextInput(session, "dosage_input", value = ifelse(is.na(next_product$dosage), "", next_product$dosage))
       
-      showNotification(paste("Produit suivant chargé:", next_product$product_name), type = "message")
+      showNotification(paste("Next Product Loaded:", next_product$product_name), type = "message")
     } else {
       showNotification("Tous les produits sont complétés !", type = "message")
     }
@@ -2407,7 +2607,7 @@ server <- function(input, output, session) {
     updateSelectInput(session, "test_facilities", selected = "")
     
     shinyjs::html("test_validation_messages", "")
-    showNotification("Formulaire Test Info vidé", type = "message")
+    showNotification("Test Info form cleared", type = "message")
   })
   
   observeEvent(input$clear_product_form_btn, {
@@ -2417,27 +2617,33 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "base_input", selected = "")
     updateSelectInput(session, "ref_input", selected = "")
     updateTextInput(session, "dosage_input", value = "")
+    updateTextInput(session, "internal_name_additional_product", value = "")
+    updateTextInput(session, "perfumer_code_additional_product", value = "")
+    updateTextInput(session, "internal_code_additional_product", value = "")
+    updateTextInput(session, "external_name_additional_product", value = "")
+    updateTextInput(session, "external_code_additional_product", value = "")
+    updateTextInput(session, "dosage_additional_product", value = "")
     
     shinyjs::html("product_validation_messages", "")
-    showNotification("Formulaire Product Info vidé", type = "message")
+    showNotification("Product Info form cleared", type = "message")
   })
   
   # ===== COMPTEURS DE DONNÉES RESTANTES =====
   output$remaining_tests_count <- renderText({
     missing_data <- missing_test_info()
     if(nrow(missing_data) > 0) {
-      paste("Tests restants à compléter:", nrow(missing_data))
+      paste("Remaining tests to complete:", nrow(missing_data))
     } else {
-      "Tous les tests sont complétés !"
+      "All tests are completed!"
     }
   })
   
   output$remaining_products_count <- renderText({
     missing_data <- missing_product_info()
     if(nrow(missing_data) > 0) {
-      paste("Produits restants à compléter:", nrow(missing_data))
+      paste("Remaining products to complete:", nrow(missing_data))
     } else {
-      "Tous les produits sont complétés !"
+      "All products are completed!"
     }
   })
   
@@ -2453,8 +2659,6 @@ server <- function(input, output, session) {
   outputOptions(output, "product_scan_completed", suspendWhenHidden = FALSE)
   
   # ===== TABLEAUX DES TABLES SA_METADATA =====
-  # CORRECTION DE L'AFFICHAGE DU TABLEAU TEST_INFO
-  # ===== TABLEAUX DES TABLES SA_METADATA (CORRIGÉS) =====
   output$test_info_table <- DT::renderDataTable({
     con <- postgres_con()
     if(!is.null(con)) {
@@ -2479,10 +2683,10 @@ server <- function(input, output, session) {
             rownames = FALSE
           )
       } else {
-        data.frame(Message = "Aucune donnée test_info disponible")
+        data.frame(Message = "No Test_info data available")
       }
     } else {
-      data.frame(Message = "Connexion SA_METADATA requise")
+      data.frame(Message = "SA_METADATA connection required")
     }
   })
   
@@ -2503,27 +2707,89 @@ server <- function(input, output, session) {
                 rownames = FALSE
               )
           } else {
-            data.frame(Message = "Table product_info vide")
+            data.frame(Message = "Product_info table empty")
           }
         } else {
-          data.frame(Message = "Table product_info non trouvée")
+          data.frame(Message = "Product_info table not found")
         }
       }, error = function(e) {
         data.frame(Message = paste("Erreur:", e$message))
       })
     } else {
-      data.frame(Message = "Connexion SA_METADATA requise")
+      data.frame(Message = "SA_METADATA connection required")
     }
   })
   
   # ===== ACTUALISATION DES TABLEAUX =====
   observeEvent(input$refresh_test_info_btn, {
-    showNotification("Actualisation Test_Info...", type = "message")
+    showNotification("Refreshing Test_Info...", type = "message")
+    # ✅ FORCER LE RECHARGEMENT EN INVALIDANT LA SORTIE
+    output$test_info_table <- DT::renderDataTable({
+      con <- postgres_con()
+      if(!is.null(con)) {
+        test_info <- load_test_info_from_postgres(con)
+        if(nrow(test_info) > 0) {
+          columns_to_exclude <- c("id", "created_at", "updated_at")
+          existing_columns <- names(test_info)
+          columns_to_exclude <- columns_to_exclude[columns_to_exclude %in% existing_columns]
+          
+          if(length(columns_to_exclude) > 0) {
+            test_info <- test_info %>% select(-all_of(columns_to_exclude))
+          }
+          
+          test_info %>%
+            DT::datatable(
+              options = list(
+                pageLength = 15,
+                scrollX = TRUE,
+                scrollY = "400px"
+              ),
+              rownames = FALSE
+            )
+        } else {
+          data.frame(Message = "No Test_info data available")
+        }
+      } else {
+        data.frame(Message = "SA_METADATA connection required")
+      }
+    })
   })
   
   observeEvent(input$refresh_product_info_script_btn, {
-    showNotification("Actualisation Product_Info...", type = "message")
+    showNotification("Refreshing Product_Info...", type = "message")
+    # ✅ FORCER LE RECHARGEMENT EN INVALIDANT LA SORTIE
+    output$product_info_script_table <- DT::renderDataTable({
+      con <- postgres_con()
+      if(!is.null(con)) {
+        tryCatch({
+          if(dbExistsTable(con, "product_info")) {
+            product_info <- dbReadTable(con, "product_info")
+            if(nrow(product_info) > 0) {
+              product_info %>%
+                DT::datatable(
+                  options = list(
+                    pageLength = 15,
+                    scrollX = TRUE,
+                    scrollY = "400px"
+                  ),
+                  rownames = FALSE
+                )
+            } else {
+              data.frame(Message = "Product_info table empty")
+            }
+          } else {
+            data.frame(Message = "Product_info table not found")
+          }
+        }, error = function(e) {
+          data.frame(Message = paste("Erreur:", e$message))
+        })
+      } else {
+        data.frame(Message = "SA_METADATA connection required")
+      }
+    })
   })
+  
+
   
   # ===== DEBUG OUTPUTS =====
   output$debug_postgres_status <- renderText({
@@ -2538,7 +2804,7 @@ server <- function(input, output, session) {
         sep = "\n"
       )
     } else {
-      "❌ Connexion PostgreSQL non établie"
+      "PostGreSQL connection not established"
     }
   })
   
@@ -2556,7 +2822,7 @@ server <- function(input, output, session) {
         paste("Erreur listage tables:", e$message)
       })
     } else {
-      "Connexion SA_METADATA requise"
+      "SA_METADATA connection required"
     }
   })
   
@@ -2592,14 +2858,14 @@ server <- function(input, output, session) {
         paste("Erreur calcul statistiques:", e$message)
       })
     } else {
-      "Connexion SA_METADATA requise"
+      "SA_METADATA connection required"
     }
   })
   
   
   # ===== TEST CONNEXION =====
   observeEvent(input$test_postgres_btn, {
-    showNotification("Test de connexion SA_METADATA...", type = "message")
+    showNotification("Testing SA_METADATA connection...", type = "message")
     
     con <- create_postgres_connection()
     if(!is.null(con)) {
@@ -2608,12 +2874,12 @@ server <- function(input, output, session) {
         result <- dbGetQuery(con, "SELECT version()")
         safe_disconnect(con)
         
-        showNotification("✅ Test connexion SA_METADATA réussi !", type = "message")
+        showNotification("Test connection SA_METADATA successful !", type = "message")
       }, error = function(e) {
-        showNotification(paste("❌ Erreur test connexion:", e$message), type = "error")
+        showNotification(paste("Error connection test:", e$message), type = "error")
       })
     } else {
-      showNotification("❌ Échec du test de connexion SA_METADATA", type = "error")
+      showNotification("Failure of SA_METADATA connection test", type = "error")
     }
   })
   
